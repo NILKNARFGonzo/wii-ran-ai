@@ -848,9 +848,11 @@ int sample_next_token(const std::vector<float>& logits,
                       const std::vector<int>& history,
                       size_t prompt_length,
                       uint32_t& random_state,
-                      bool use_sampling) {
+                      bool use_sampling,
+                      bool chat_sampling) {
     std::vector<float> adjusted = logits;
-    const float repetition_penalty = use_sampling ? 1.15f : 1.1f;
+    const float repetition_penalty = chat_sampling ? 1.1f :
+                                     use_sampling ? 1.15f : 1.1f;
     for (size_t i = prompt_length; i < history.size(); ++i) {
         const int token = history[i];
         if (token >= 0 && static_cast<size_t>(token) < adjusted.size()) {
@@ -860,7 +862,7 @@ int sample_next_token(const std::vector<float>& logits,
         }
     }
 
-    if (use_sampling && history.size() >= 2) {
+    if (use_sampling && !chat_sampling && history.size() >= 2) {
         const int previous_a = history[history.size() - 2];
         const int previous_b = history[history.size() - 1];
         for (size_t i = 0; i + 2 < history.size(); ++i) {
@@ -946,7 +948,7 @@ std::string read_prompt(const char* path) {
 
 std::string generate(const Model& model, const Tokenizer& tokenizer,
                      const std::string& prompt_text, int max_new_tokens,
-                     bool use_sampling) {
+                     bool use_sampling, bool chat_sampling = false) {
     std::vector<int> prompt = tokenizer.encode(prompt_text);
     if (prompt.empty()) prompt.push_back(0);
     if (prompt.size() > model.context) {
@@ -968,7 +970,8 @@ std::string generate(const Model& model, const Tokenizer& tokenizer,
     }
     for (int i = 0; i < max_new_tokens && prompt.size() + generated.size() < model.context; ++i) {
         const int next = sample_next_token(
-            logits, history, prompt.size(), random_state, use_sampling);
+            logits, history, prompt.size(), random_state, use_sampling,
+            chat_sampling);
         if (next == model.eos_id) break;
         generated.push_back(next);
         history.push_back(next);
@@ -987,7 +990,7 @@ void run(const char* weights_path, const char* tokenizer_path,
     tokenizer.load(tokenizer_path);
     const bool use_sampling = model.architecture == 1 || requested_sampling;
     std::cout << generate(model, tokenizer, read_prompt(prompt_path), max_new_tokens,
-                          use_sampling)
+                          use_sampling, model.architecture == 2 && requested_sampling)
               << std::endl;
 }
 #endif
@@ -1282,7 +1285,7 @@ int main() {
                                                ? kMediumChatMaxReply
                                                : kNanoChatMaxReply)
                         : nano_continuation_model ? 128 : 80,
-                    !chat_model);
+                    true, chat_model);
             } catch (const std::exception& e) {
                 consoleClear();
                 std::printf("Could not generate a reply:\n%s\n\n", e.what());

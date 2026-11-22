@@ -133,8 +133,8 @@ Then run:
 
 Story generation uses top-k sampling with a repetition penalty and repeated
 trigram blocking and a fresh time-derived seed per generation. Chat uses
-deterministic decoding with the upstream 1.1
-repetition penalty and BananaMind role markers,
+top-k sampling with a fresh time-derived seed, the upstream 1.1 repetition
+penalty, and BananaMind role markers,
 special token IDs, digit-isolated byte-level BPE, QK RMSNorm, rotary position
 embeddings, grouped-query attention, and SwiGLU blocks. The tokenizer's
 pre-tokenization is a compact C++ implementation of the upstream digit-aware
