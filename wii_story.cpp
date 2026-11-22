@@ -118,6 +118,10 @@ private:
 struct Tokenizer {
     std::vector<std::string> tokens;
     std::unordered_map<uint32_t, MergeRule> merges;
+    std::vector<uint8_t> special;
+    std::vector<uint32_t> special_ids;
+    bool digit_aware;
+    int eos_id;
     int byte_ids[256];
 
     static uint32_t pair_key(uint16_t left, uint16_t right) {
@@ -138,16 +142,33 @@ struct Tokenizer {
         char magic[4];
         uint32_t vocab_size, merge_count;
         if (!reader.read(magic, sizeof(magic)) ||
-            std::memcmp(magic, "TKB1", 4) != 0 ||
+            (std::memcmp(magic, "TKB1", 4) != 0 &&
+             std::memcmp(magic, "TKB2", 4) != 0) ||
             !reader.read_u32(vocab_size) || !reader.read_u32(merge_count)) {
             throw std::runtime_error("Invalid tokenizer header");
         }
+        digit_aware = std::memcmp(magic, "TKB2", 4) == 0;
+        uint32_t special_count = 0;
+        if (digit_aware) {
+            uint32_t eos;
+            if (!reader.read_u32(special_count) || !reader.read_u32(eos)) {
+                throw std::runtime_error("Truncated tokenizer metadata");
+            }
+            eos_id = static_cast<int>(eos);
+        } else {
+            eos_id = 0;
+        }
         tokens.resize(vocab_size);
+        special.assign(vocab_size, 0);
         for (uint32_t i = 0; i < vocab_size; ++i) {
             uint16_t length;
-            if (!reader.read_u16(length)) {
+            uint8_t is_special = 0;
+            if ((digit_aware && !reader.read_u8(is_special)) ||
+                !reader.read_u16(length)) {
                 throw std::runtime_error("Truncated tokenizer vocabulary");
             }
+            special[i] = is_special;
+            if (is_special) special_ids.push_back(i);
             tokens[i].resize(length);
             if (length && !reader.read(&tokens[i][0], length)) {
                 throw std::runtime_error("Truncated tokenizer token");
@@ -161,10 +182,13 @@ struct Tokenizer {
             }
             merges[pair_key(left, right)] = MergeRule{rank, result};
         }
+        if (special_count > vocab_size) {
+            throw std::runtime_error("Invalid special-token count");
+        }
 
         for (int i = 0; i < 256; ++i) byte_ids[i] = -1;
         for (uint32_t id = 0; id < tokens.size(); ++id) {
-            if (tokens[id].size() == 1) {
+            if (!special[id] && tokens[id].size() == 1) {
                 byte_ids[static_cast<uint8_t>(tokens[id][0])] = static_cast<int>(id);
             }
         }
@@ -242,6 +266,25 @@ struct Tokenizer {
         std::vector<int> output;
         size_t pos = 0;
         while (pos < text.size()) {
+            size_t special_at = text.size();
+            uint32_t special_id = 0;
+            if (digit_aware) {
+                for (size_t s = 0; s < special_ids.size(); ++s) {
+                    const uint32_t id = special_ids[s];
+                    if (!tokens[id].empty() &&
+                        pos + tokens[id].size() <= text.size() &&
+                        text.compare(pos, tokens[id].size(), tokens[id]) == 0 &&
+                        tokens[id].size() < special_at - pos) {
+                        special_at = pos + tokens[id].size();
+                        special_id = id;
+                    }
+                }
+            }
+            if (special_at != text.size()) {
+                output.push_back(static_cast<int>(special_id));
+                pos = special_at;
+                continue;
+            }
             size_t start = pos;
             if (text[pos] == '\'') {
                 size_t length = 0;
@@ -281,6 +324,7 @@ struct Tokenizer {
             size_t end = pos;
             while (end < text.size() &&
                    char_class(static_cast<unsigned char>(text[end])) == kind) {
+                if (digit_aware && kind == 2) break;
                 size_t width = utf8_char_width(static_cast<unsigned char>(text[end]));
                 end += std::min(width, text.size() - end);
             }
@@ -295,7 +339,7 @@ struct Tokenizer {
         std::string result;
         for (size_t i = 0; i < ids.size(); ++i) {
             if (ids[i] >= 0 && static_cast<size_t>(ids[i]) < tokens.size()) {
-                result += tokens[ids[i]];
+                if (!special[ids[i]]) result += tokens[ids[i]];
             }
         }
         return result;
@@ -304,11 +348,19 @@ struct Tokenizer {
 };
 
 struct Model {
+    uint32_t architecture;
     uint32_t layers;
     uint32_t vocab_size;
     uint32_t context;
     uint32_t hidden;
     uint32_t heads;
+    uint32_t kv_heads;
+    uint32_t intermediate;
+    uint32_t head_dim;
+    float rope_theta;
+    float rms_eps;
+    float embedding_scale;
+    int eos_id;
     std::unordered_map<std::string, Tensor> tensors;
 
 #ifndef GEKKO
@@ -333,13 +385,41 @@ struct Model {
         tensors.clear();
         char magic[4];
         uint32_t version, tensor_count;
-        if (!reader.read(magic, sizeof(magic)) ||
-            std::memcmp(magic, "SWM1", 4) != 0 ||
-            !reader.read_u32(version) || version != 1 ||
-            !reader.read_u32(layers) || !reader.read_u32(vocab_size) ||
-            !reader.read_u32(context) || !reader.read_u32(hidden) ||
-            !reader.read_u32(heads) || !reader.read_u32(tensor_count)) {
+        if (!reader.read(magic, sizeof(magic))) {
             throw std::runtime_error("Invalid weights header");
+        }
+        if (std::memcmp(magic, "SWM1", 4) == 0) {
+            architecture = 1;
+            if (!reader.read_u32(version) || version != 1 ||
+                !reader.read_u32(layers) || !reader.read_u32(vocab_size) ||
+                !reader.read_u32(context) || !reader.read_u32(hidden) ||
+                !reader.read_u32(heads) || !reader.read_u32(tensor_count)) {
+                throw std::runtime_error("Invalid story weights header");
+            }
+            kv_heads = heads;
+            intermediate = hidden * 4;
+            head_dim = hidden / heads;
+            rope_theta = 0.0f;
+            rms_eps = 1e-5f;
+            embedding_scale = 1.0f;
+            eos_id = 0;
+        } else if (std::memcmp(magic, "BNM1", 4) == 0) {
+            architecture = 2;
+            uint32_t bos_id, eos_id_value;
+            if (!reader.read_u32(version) || version != 1 ||
+                !reader.read_u32(layers) || !reader.read_u32(vocab_size) ||
+                !reader.read_u32(context) || !reader.read_u32(hidden) ||
+                !reader.read_u32(heads) || !reader.read_u32(kv_heads) ||
+                !reader.read_u32(intermediate) || !reader.read_u32(head_dim) ||
+                !reader.read_f32(rope_theta) || !reader.read_f32(rms_eps) ||
+                !reader.read_u32(bos_id) || !reader.read_u32(eos_id_value) ||
+                !reader.read_u32(tensor_count)) {
+                throw std::runtime_error("Invalid BananaMind weights header");
+            }
+            eos_id = static_cast<int>(eos_id_value);
+            embedding_scale = std::sqrt(static_cast<float>(hidden));
+        } else {
+            throw std::runtime_error("Unknown weights file format");
         }
 
         for (uint32_t i = 0; i < tensor_count; ++i) {
@@ -387,7 +467,11 @@ struct Model {
         }
         if (tensors.size() != tensor_count) throw std::runtime_error("Duplicate tensor name");
         require("transformer.wte.weight");
-        require("transformer.wpe.weight");
+        if (architecture == 1) {
+            require("transformer.wpe.weight");
+        } else {
+            require("transformer.ln_f.weight");
+        }
     }
 
     const Tensor& get(const std::string& name) const {
@@ -443,6 +527,192 @@ struct Cache {
 
 void model_step(const Model& model, Cache& cache, int token, uint32_t position,
                 std::vector<float>& logits) {
+    if (model.architecture == 2) {
+        const uint32_t d_model = model.hidden;
+        const uint32_t kv_width = model.kv_heads * model.head_dim;
+        const Tensor& token_embedding = model.get("transformer.wte.weight");
+        std::vector<float> x(d_model);
+        for (uint32_t i = 0; i < d_model; ++i) {
+            x[i] = token_embedding.at(static_cast<size_t>(token) * d_model + i) *
+                   model.embedding_scale;
+        }
+
+        if (cache.keys.empty()) {
+            cache.keys.resize(model.layers);
+            cache.values.resize(model.layers);
+            for (uint32_t l = 0; l < model.layers; ++l) {
+                cache.keys[l].reserve(static_cast<size_t>(model.context) * kv_width);
+                cache.values[l].reserve(static_cast<size_t>(model.context) * kv_width);
+            }
+        }
+
+        const auto normalize = [&model](
+                                   const std::vector<float>& input,
+                                   const Tensor& weight,
+                                   std::vector<float>& output) {
+            double squares = 0.0;
+            for (size_t i = 0; i < input.size(); ++i) squares += input[i] * input[i];
+            const float scale = 1.0f / std::sqrt(
+                static_cast<float>(squares / input.size()) + model.rms_eps);
+            output.resize(input.size());
+            for (size_t i = 0; i < input.size(); ++i) {
+                output[i] = input[i] * scale * weight.at(i);
+            }
+        };
+        const auto project = [](const Tensor& weight,
+                                const std::vector<float>& input,
+                                std::vector<float>& output) {
+            const size_t in = weight.shape[0];
+            const size_t out = weight.shape[1];
+            if (input.size() != in) throw std::runtime_error("Projection tensor shape mismatch");
+            output.assign(out, 0.0f);
+            for (size_t i = 0; i < in; ++i) {
+                const float value = input[i];
+                const size_t row = i * out;
+                for (size_t j = 0; j < out; ++j) {
+                    output[j] += value * weight.at(row + j);
+                }
+            }
+        };
+
+        std::vector<float> rope_cos(model.head_dim / 2);
+        std::vector<float> rope_sin(model.head_dim / 2);
+        for (uint32_t j = 0; j < model.head_dim; j += 2) {
+            const float angle = static_cast<float>(position) /
+                std::pow(model.rope_theta, static_cast<float>(j) / model.head_dim);
+            rope_cos[j / 2] = std::cos(angle);
+            rope_sin[j / 2] = std::sin(angle);
+        }
+
+        for (uint32_t layer = 0; layer < model.layers; ++layer) {
+            const std::string prefix = "transformer.h." + std::to_string(layer) + ".";
+            std::vector<float> norm1;
+            normalize(x, model.get(prefix + "ln_1.weight"), norm1);
+            std::vector<float> q, k, v;
+            project(model.get(prefix + "attn.q_proj.weight"), norm1, q);
+            project(model.get(prefix + "attn.k_proj.weight"), norm1, k);
+            project(model.get(prefix + "attn.v_proj.weight"), norm1, v);
+
+            for (uint32_t h = 0; h < model.heads; ++h) {
+                const size_t base = static_cast<size_t>(h) * model.head_dim;
+                double squares = 0.0;
+                for (uint32_t j = 0; j < model.head_dim; ++j) {
+                    squares += q[base + j] * q[base + j];
+                }
+                const float scale = 1.0f / std::sqrt(
+                    static_cast<float>(squares / model.head_dim) + model.rms_eps);
+                const Tensor& q_norm = model.get(prefix + "attn.q_norm.weight");
+                for (uint32_t j = 0; j < model.head_dim; ++j) {
+                    q[base + j] *= scale * q_norm.at(j);
+                }
+            }
+            for (uint32_t h = 0; h < model.kv_heads; ++h) {
+                const size_t base = static_cast<size_t>(h) * model.head_dim;
+                double squares = 0.0;
+                for (uint32_t j = 0; j < model.head_dim; ++j) {
+                    squares += k[base + j] * k[base + j];
+                }
+                const float scale = 1.0f / std::sqrt(
+                    static_cast<float>(squares / model.head_dim) + model.rms_eps);
+                const Tensor& k_norm = model.get(prefix + "attn.k_norm.weight");
+                for (uint32_t j = 0; j < model.head_dim; ++j) {
+                    k[base + j] *= scale * k_norm.at(j);
+                }
+            }
+
+            for (uint32_t h = 0; h < model.heads; ++h) {
+                const size_t base = static_cast<size_t>(h) * model.head_dim;
+                for (uint32_t j = 0; j < model.head_dim; j += 2) {
+                    const float cosine = rope_cos[j / 2];
+                    const float sine = rope_sin[j / 2];
+                    const float even = q[base + j];
+                    const float odd = q[base + j + 1];
+                    q[base + j] = even * cosine - odd * sine;
+                    q[base + j + 1] = even * sine + odd * cosine;
+                }
+            }
+            for (uint32_t h = 0; h < model.kv_heads; ++h) {
+                const size_t base = static_cast<size_t>(h) * model.head_dim;
+                for (uint32_t j = 0; j < model.head_dim; j += 2) {
+                    const float cosine = rope_cos[j / 2];
+                    const float sine = rope_sin[j / 2];
+                    const float even = k[base + j];
+                    const float odd = k[base + j + 1];
+                    k[base + j] = even * cosine - odd * sine;
+                    k[base + j + 1] = even * sine + odd * cosine;
+                }
+            }
+
+            std::vector<float>& keys = cache.keys[layer];
+            std::vector<float>& values = cache.values[layer];
+            keys.insert(keys.end(), k.begin(), k.end());
+            values.insert(values.end(), v.begin(), v.end());
+            std::vector<float> attended(d_model, 0.0f);
+            std::vector<float> scores(position + 1);
+            const float attention_scale = 1.0f /
+                std::sqrt(static_cast<float>(model.head_dim));
+            const uint32_t heads_per_kv = model.heads / model.kv_heads;
+            for (uint32_t h = 0; h < model.heads; ++h) {
+                const uint32_t kv_head = h / heads_per_kv;
+                const size_t query_base = static_cast<size_t>(h) * model.head_dim;
+                const size_t kv_base = static_cast<size_t>(kv_head) * model.head_dim;
+                float maximum = -std::numeric_limits<float>::infinity();
+                for (uint32_t t = 0; t <= position; ++t) {
+                    double dot = 0.0;
+                    const size_t cache_base = static_cast<size_t>(t) * kv_width + kv_base;
+                    for (uint32_t j = 0; j < model.head_dim; ++j) {
+                        dot += q[query_base + j] * keys[cache_base + j];
+                    }
+                    scores[t] = static_cast<float>(dot) * attention_scale;
+                    maximum = std::max(maximum, scores[t]);
+                }
+                double denominator = 0.0;
+                for (uint32_t t = 0; t <= position; ++t) {
+                    scores[t] = std::exp(scores[t] - maximum);
+                    denominator += scores[t];
+                }
+                for (uint32_t t = 0; t <= position; ++t) {
+                    const float probability =
+                        scores[t] / static_cast<float>(denominator);
+                    const size_t value_base = static_cast<size_t>(t) * kv_width + kv_base;
+                    for (uint32_t j = 0; j < model.head_dim; ++j) {
+                        attended[query_base + j] +=
+                            probability * values[value_base + j];
+                    }
+                }
+            }
+            std::vector<float> projected;
+            project(model.get(prefix + "attn.o_proj.weight"), attended, projected);
+            for (uint32_t i = 0; i < d_model; ++i) x[i] += projected[i];
+
+            std::vector<float> norm2;
+            normalize(x, model.get(prefix + "ln_2.weight"), norm2);
+            std::vector<float> gate, up;
+            project(model.get(prefix + "mlp.w_gate.weight"), norm2, gate);
+            project(model.get(prefix + "mlp.w_up.weight"), norm2, up);
+            for (size_t i = 0; i < gate.size(); ++i) {
+                const float sigmoid = 1.0f / (1.0f + std::exp(-gate[i]));
+                gate[i] = gate[i] * sigmoid * up[i];
+            }
+            std::vector<float> mlp;
+            project(model.get(prefix + "mlp.w_down.weight"), gate, mlp);
+            for (uint32_t i = 0; i < d_model; ++i) x[i] += mlp[i];
+        }
+
+        std::vector<float> final;
+        normalize(x, model.get("transformer.ln_f.weight"), final);
+        logits.resize(model.vocab_size);
+        for (uint32_t token_id = 0; token_id < model.vocab_size; ++token_id) {
+            float logit = 0.0f;
+            const size_t base = static_cast<size_t>(token_id) * d_model;
+            for (uint32_t i = 0; i < d_model; ++i) {
+                logit += final[i] * token_embedding.at(base + i);
+            }
+            logits[token_id] = logit;
+        }
+        return;
+    }
+
     const uint32_t d_model = model.hidden;
     const uint32_t head_dim = d_model / model.heads;
     const Tensor& token_embedding = model.get("transformer.wte.weight");
@@ -553,9 +823,10 @@ uint32_t next_random(uint32_t& state) {
 int sample_next_token(const std::vector<float>& logits,
                       const std::vector<int>& history,
                       size_t prompt_length,
-                      uint32_t& random_state) {
+                      uint32_t& random_state,
+                      bool use_sampling) {
     std::vector<float> adjusted = logits;
-    const float repetition_penalty = 1.15f;
+    const float repetition_penalty = use_sampling ? 1.15f : 1.1f;
     for (size_t i = prompt_length; i < history.size(); ++i) {
         const int token = history[i];
         if (token >= 0 && static_cast<size_t>(token) < adjusted.size()) {
@@ -565,7 +836,7 @@ int sample_next_token(const std::vector<float>& logits,
         }
     }
 
-    if (history.size() >= 2) {
+    if (use_sampling && history.size() >= 2) {
         const int previous_a = history[history.size() - 2];
         const int previous_b = history[history.size() - 1];
         for (size_t i = 0; i + 2 < history.size(); ++i) {
@@ -576,6 +847,11 @@ int sample_next_token(const std::vector<float>& logits,
                 }
             }
         }
+    }
+
+    if (!use_sampling) {
+        return static_cast<int>(std::distance(
+            adjusted.begin(), std::max_element(adjusted.begin(), adjusted.end())));
     }
 
     const size_t top_k = 16;
@@ -648,8 +924,9 @@ std::string generate(const Model& model, const Tokenizer& tokenizer,
         model_step(model, cache, prompt[i], static_cast<uint32_t>(i), logits);
     }
     for (int i = 0; i < max_new_tokens && prompt.size() + generated.size() < model.context; ++i) {
-        const int next = sample_next_token(logits, history, prompt.size(), random_state);
-        if (next == 0) break;
+        const int next = sample_next_token(
+            logits, history, prompt.size(), random_state, model.architecture == 1);
+        if (next == model.eos_id) break;
         generated.push_back(next);
         history.push_back(next);
         model_step(model, cache, next,
@@ -678,12 +955,19 @@ extern const uint8_t story_weights_start[];
 extern const uint8_t story_weights_end[];
 extern const uint8_t story_tokenizer_start[];
 extern const uint8_t story_tokenizer_end[];
+extern const uint8_t chat_weights_start[];
+extern const uint8_t chat_weights_end[];
+extern const uint8_t chat_tokenizer_start[];
+extern const uint8_t chat_tokenizer_end[];
 }
 
 namespace {
 
 std::string prompt_text;
+std::vector<std::pair<std::string, std::string> > chat_history;
 const size_t kMaxPromptLength = 256;
+const size_t kChatWiiContext = 256;
+const size_t kChatMaxReply = 64;
 const char* kKeyboardRows[] = {
     "1234567890",
     "QWERTYUIOP",
@@ -713,9 +997,43 @@ void move_cursor(int row_delta, int column_delta) {
     }
 }
 
-void draw_input_screen(bool usb_keyboard) {
+void draw_model_menu(int selected) {
     consoleClear();
-    std::printf("Wii Ran AI - type a story prompt\n\n");
+    std::printf("Wii Ran AI - select a model\n\n");
+    std::printf("%s StoryBananaMind-7.5M (stories)\n",
+                selected == 0 ? ">" : " ");
+    std::printf("%s BananaMind 2 Nano Chat (assistant)\n\n",
+                selected == 1 ? ">" : " ");
+    std::printf("D-pad: select   A: choose   Home: quit\n");
+}
+
+std::string make_chat_prompt(const Tokenizer& tokenizer,
+                             const std::string& user_message) {
+    const std::string system_prompt =
+        "You are BananaMind, a friendly and concise assistant. "
+        "Answer directly, be honest when you are unsure, and keep explanations clear.";
+    size_t first_turn = 0;
+    std::string prompt;
+    while (true) {
+        prompt = "<|bos|><|system|>\n" + system_prompt + "\n";
+        for (size_t i = first_turn; i < chat_history.size(); ++i) {
+            prompt += "<|user|>\n" + chat_history[i].first +
+                      "<|assistant|>\n" + chat_history[i].second +
+                      "<|eos|>\n";
+        }
+        prompt += "<|user|>\n" + user_message + "<|assistant|>\n";
+        if (tokenizer.encode(prompt).size() + kChatMaxReply <= kChatWiiContext) return prompt;
+        if (first_turn >= chat_history.size()) {
+            throw std::runtime_error("Message is too long for the Wii chat context");
+        }
+        ++first_turn;
+    }
+}
+
+void draw_input_screen(bool usb_keyboard, bool chat_model) {
+    consoleClear();
+    std::printf(chat_model ? "BananaMind Chat - enter a message\n\n"
+                           : "Wii Ran AI - type a story prompt\n\n");
     std::printf("Prompt (max %u chars):\n%s_\n\n",
                 static_cast<unsigned>(kMaxPromptLength), prompt_text.c_str());
     if (usb_keyboard) {
@@ -757,21 +1075,40 @@ int main() {
     VIDEO_WaitVSync();
     if (mode->viTVMode & VI_NON_INTERLACE) VIDEO_WaitVSync();
     std::ios::sync_with_stdio(false);
-    std::printf("\x1b[2;0HStoryBananaMind Wii demo\n");
     try {
-        std::printf("Loading model...\n");
+        int selected_model = 0;
+        while (true) {
+            draw_model_menu(selected_model);
+            WPAD_ScanPads();
+            const int buttons = WPAD_ButtonsDown(0);
+            if (buttons & WPAD_BUTTON_HOME) return 0;
+            if (buttons & WPAD_BUTTON_UP) selected_model = (selected_model + 1) % 2;
+            if (buttons & WPAD_BUTTON_DOWN) selected_model = (selected_model + 1) % 2;
+            if (buttons & WPAD_BUTTON_A) break;
+            VIDEO_WaitVSync();
+        }
+        const bool chat_model = selected_model == 1;
+        std::printf("\nLoading %s...\n", chat_model
+                    ? "BananaMind 2 Nano Chat" : "StoryBananaMind-7.5M");
         Model model;
         Tokenizer tokenizer;
-        model.load(story_weights_start,
-                   static_cast<size_t>(story_weights_end - story_weights_start));
-        tokenizer.load(story_tokenizer_start,
-                       static_cast<size_t>(story_tokenizer_end - story_tokenizer_start));
+        if (chat_model) {
+            model.load(chat_weights_start,
+                       static_cast<size_t>(chat_weights_end - chat_weights_start));
+            tokenizer.load(chat_tokenizer_start,
+                           static_cast<size_t>(chat_tokenizer_end - chat_tokenizer_start));
+        } else {
+            model.load(story_weights_start,
+                       static_cast<size_t>(story_weights_end - story_weights_start));
+            tokenizer.load(story_tokenizer_start,
+                           static_cast<size_t>(story_tokenizer_end - story_tokenizer_start));
+        }
 
         const bool keyboard_ready = KEYBOARD_Init(on_usb_key) >= 0;
         int previous_buttons = 0;
         std::string previous_prompt;
         while (true) {
-            draw_input_screen(keyboard_ready && USBKeyboard_IsConnected());
+            draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model);
             bool generate_story = false;
             while (!generate_story) {
                 WPAD_ScanPads();
@@ -799,18 +1136,39 @@ int main() {
                 }
                 if (buttons & WPAD_BUTTON_PLUS) generate_story = true;
                 if (buttons != previous_buttons || prompt_text != previous_prompt) {
-                    draw_input_screen(keyboard_ready && USBKeyboard_IsConnected());
+                    draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model);
                 }
                 previous_buttons = buttons;
                 previous_prompt = prompt_text;
                 VIDEO_WaitVSync();
             }
 
-            draw_input_screen(keyboard_ready && USBKeyboard_IsConnected());
-            std::printf("\n\nGenerating...\n");
-            const std::string continuation = generate(model, tokenizer, prompt_text, 80);
-            std::printf("\n\n%s\n\n", continuation.c_str());
-            std::printf("Press A or Plus to enter another prompt, Home to quit.\n");
+            draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model);
+            std::printf("\n\n%s...\n", chat_model ? "Thinking" : "Generating");
+            std::string continuation;
+            try {
+                const std::string active_prompt = chat_model
+                    ? make_chat_prompt(tokenizer, prompt_text) : prompt_text;
+                continuation = generate(
+                    model, tokenizer, active_prompt,
+                    chat_model ? static_cast<int>(kChatMaxReply) : 80);
+            } catch (const std::exception& e) {
+                consoleClear();
+                std::printf("Could not generate a reply:\n%s\n\n", e.what());
+                std::printf("Edit the message and try again. Press HOME to quit.\n");
+                VIDEO_WaitVSync();
+                continue;
+            }
+            if (chat_model) {
+                chat_history.push_back(std::make_pair(prompt_text, continuation));
+                if (chat_history.size() > 8) chat_history.erase(chat_history.begin());
+                std::printf("\nYou: %s\n\nAssistant: %s\n\n",
+                            prompt_text.c_str(), continuation.c_str());
+            } else {
+                std::printf("\n\n%s\n\n", continuation.c_str());
+            }
+            std::printf("Press A or Plus to enter another %s, Home to quit.\n",
+                        chat_model ? "message" : "prompt");
             while (true) {
                 WPAD_ScanPads();
                 const int buttons = WPAD_ButtonsDown(0);
