@@ -2,9 +2,9 @@
 <app version="1">
   <name>Wii Ran AI</name>
   <coder>NILKNARFGonzo</coder>
-  <version>1.2.1</version>
+  <version>2.0.0</version>
   <release_date>20261122000000</release_date>
   <short_description>Local stories and chat on your Wii</short_description>
-  <long_description>Stories, Nano Chat, or larger Medium Chat. Chat is experimental; replies may be wrong. Nano: 2,048 context / 128-token replies. Medium: 512 / 64. D-pad selects, A types, B deletes, Minus spaces, Plus generates, Home quits.</long_description>
+  <long_description>Stories, Nano Chat, or Medium Chat. D-pad selects keys; A types, B deletes, 1 shifts to symbols for one key, 2 toggles Caps Lock. Minus spaces, Plus generates, Home quits. Chat is experimental. Nano: 128-token replies; Medium: 64.</long_description>
   <ahb_access />
 </app>

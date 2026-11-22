@@ -38,8 +38,10 @@ at runtime. The chat checkpoints are pinned to upstream revisions
    continuation, Nano Chat for the smaller assistant, or Medium Chat for the
    larger assistant.
 4. Type with a USB keyboard, or use the Wii Remote D-pad to select on-screen
-   letters, numbers, and punctuation. Press **A** to type, **B** to delete,
-   **Minus** for a space, and **Plus** to generate a story or chat reply.
+   letters, numbers, and symbols. Press **A** to type, **B** to delete,
+   **1** for one-key Shift/symbols, **2** to toggle Caps Lock, **Minus** for a
+   space, and **Plus** to generate a story or chat reply. Shift is consumed by
+   the next on-screen key; Caps Lock changes on-screen letter case.
 5. Press **A** or **Plus** after a response to enter another prompt/message.
    The chat model retains up to 32 recent turns, trimming older context to fit
    the selected model's Wii memory budget. Press **Home** to quit.

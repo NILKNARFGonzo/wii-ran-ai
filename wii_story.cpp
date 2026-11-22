@@ -998,8 +998,16 @@ const char* kKeyboardRows[] = {
     "ASDFGHJKL ",
     "ZXCVBNM.,?!"
 };
+const char* kShiftedKeyboardRows[] = {
+    "!@#$%^&*()",
+    "-_=+[]{}\\~",
+    ";:'\",<>./?",
+    "(){}<>[]|~"
+};
 int key_row = 0;
 int key_column = 0;
+bool shift_active = false;
+bool caps_lock = false;
 
 void on_usb_key(char symbol) {
     if (symbol == '\b' || symbol == 0x7f) {
@@ -1019,6 +1027,16 @@ void move_cursor(int row_delta, int column_delta) {
          kKeyboardRows[key_row][key_column] == ' '; ++attempts) {
         key_column = (key_column + (column_delta < 0 ? 9 : 1)) % 10;
     }
+}
+
+char keyboard_key(int row, int column) {
+    if (shift_active) return kShiftedKeyboardRows[row][column];
+    char key = kKeyboardRows[row][column];
+    if (key >= 'A' && key <= 'Z') {
+        const bool uppercase = caps_lock;
+        if (!uppercase) key = static_cast<char>(key - 'A' + 'a');
+    }
+    return key;
 }
 
 void draw_model_menu(int selected) {
@@ -1087,10 +1105,12 @@ void draw_input_screen(bool usb_keyboard, bool chat_model) {
     } else {
         std::printf("USB keyboard not detected; use Wii Remote\n");
     }
-    std::printf("\n");
+    std::printf("1: Shift %s   2: Caps Lock %s\n\n",
+                shift_active ? "ON" : "off",
+                caps_lock ? "ON" : "off");
     for (int row = 0; row < 4; ++row) {
         for (int column = 0; column < 10; ++column) {
-            const char key = kKeyboardRows[row][column];
+            const char key = keyboard_key(row, column);
             if (key == ' ') {
                 std::printf("    ");
             } else if (row == key_row && column == key_column) {
@@ -1102,6 +1122,7 @@ void draw_input_screen(bool usb_keyboard, bool chat_model) {
         std::printf("\n");
     }
     std::printf("\nRemote: D-pad move, A type, B delete\n");
+    std::printf("1: Shift/symbols (one key)   2: Caps Lock\n");
     std::printf("Minus: space   Plus: generate   Home: quit\n");
 }
 
@@ -1176,10 +1197,13 @@ int main() {
                 if (buttons & WPAD_BUTTON_RIGHT) move_cursor(0, 1);
                 if (buttons & WPAD_BUTTON_UP) move_cursor(-1, 0);
                 if (buttons & WPAD_BUTTON_DOWN) move_cursor(1, 0);
+                if (buttons & WPAD_BUTTON_1) shift_active = !shift_active;
+                if (buttons & WPAD_BUTTON_2) caps_lock = !caps_lock;
                 if (buttons & WPAD_BUTTON_A) {
-                    char selected = kKeyboardRows[key_row][key_column];
+                    char selected = keyboard_key(key_row, key_column);
                     if (selected && prompt_text.size() < kMaxPromptLength) {
                         prompt_text += selected;
+                        if (shift_active) shift_active = false;
                     }
                 }
                 if ((buttons & WPAD_BUTTON_B) && !prompt_text.empty()) {
