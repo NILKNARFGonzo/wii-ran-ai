@@ -13,3 +13,13 @@ story-wii-weights.bin
 story-wii-tokenizer.bin
 .model-data-stamp
 .converted-stamp
+chat-config.json
+chat-model.safetensors
+chat-tokenizer.json
+chat-wii-weights.bin
+chat-wii-tokenizer.bin
+.chat-model-data-stamp
+.chat-converted-stamp
+tokenizer-chat.json
+model-chat.safetensors
+config-chat.json

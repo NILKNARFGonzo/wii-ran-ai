@@ -12,6 +12,7 @@ FILES = {
     ROOT / "storybananamind-wii.dol": APP_DIR / "boot.dol",
     ROOT / "meta.xml": APP_DIR / "meta.xml",
     ROOT / "icon.png": APP_DIR / "icon.png",
+    ROOT / "LICENSE": APP_DIR / "LICENSE",
 }
 
 
