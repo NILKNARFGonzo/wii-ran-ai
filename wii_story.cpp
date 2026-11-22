@@ -310,6 +310,7 @@ struct Model {
     uint32_t hidden;
     uint32_t heads;
     std::unordered_map<std::string, Tensor> tensors;
+
 #ifndef GEKKO
     std::vector<uint8_t> owned_bytes;
 
@@ -440,7 +441,8 @@ struct Cache {
     std::vector<std::vector<float> > values;
 };
 
-int model_step(const Model& model, Cache& cache, int token, uint32_t position) {
+void model_step(const Model& model, Cache& cache, int token, uint32_t position,
+                std::vector<float>& logits) {
     const uint32_t d_model = model.hidden;
     const uint32_t head_dim = d_model / model.heads;
     const Tensor& token_embedding = model.get("transformer.wte.weight");
@@ -530,20 +532,88 @@ int model_step(const Model& model, Cache& cache, int token, uint32_t position) {
     std::vector<float> final;
     layer_norm(x, final, model.get("transformer.ln_f.weight"),
                model.get("transformer.ln_f.bias"));
-    int best_token = 0;
-    float best_logit = -std::numeric_limits<float>::infinity();
+    logits.resize(model.vocab_size);
     for (uint32_t token_id = 0; token_id < model.vocab_size; ++token_id) {
-        double logit = 0.0;
+        float logit = 0.0f;
         const size_t base = static_cast<size_t>(token_id) * d_model;
         for (uint32_t i = 0; i < d_model; ++i) {
             logit += final[i] * token_embedding.at(base + i);
         }
-        if (logit > best_logit) {
-            best_logit = static_cast<float>(logit);
-            best_token = static_cast<int>(token_id);
+        logits[token_id] = logit;
+    }
+}
+
+uint32_t next_random(uint32_t& state) {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+}
+
+int sample_next_token(const std::vector<float>& logits,
+                      const std::vector<int>& history,
+                      size_t prompt_length,
+                      uint32_t& random_state) {
+    std::vector<float> adjusted = logits;
+    const float repetition_penalty = 1.15f;
+    for (size_t i = prompt_length; i < history.size(); ++i) {
+        const int token = history[i];
+        if (token >= 0 && static_cast<size_t>(token) < adjusted.size()) {
+            float& score = adjusted[token];
+            score = score < 0.0f ? score * repetition_penalty
+                                 : score / repetition_penalty;
         }
     }
-    return best_token;
+
+    if (history.size() >= 2) {
+        const int previous_a = history[history.size() - 2];
+        const int previous_b = history[history.size() - 1];
+        for (size_t i = 0; i + 2 < history.size(); ++i) {
+            if (history[i] == previous_a && history[i + 1] == previous_b) {
+                const int repeated = history[i + 2];
+                if (repeated >= 0 && static_cast<size_t>(repeated) < adjusted.size()) {
+                    adjusted[repeated] = -std::numeric_limits<float>::infinity();
+                }
+            }
+        }
+    }
+
+    const size_t top_k = 16;
+    std::vector<size_t> candidates;
+    for (size_t i = 0; i < adjusted.size(); ++i) {
+        if (!std::isfinite(adjusted[i])) continue;
+        size_t insert_at = candidates.size();
+        for (size_t j = 0; j < candidates.size(); ++j) {
+            if (adjusted[i] > adjusted[candidates[j]]) {
+                insert_at = j;
+                break;
+            }
+        }
+        if (insert_at < top_k) {
+            candidates.insert(candidates.begin() + insert_at, i);
+            if (candidates.size() > top_k) candidates.pop_back();
+        } else if (candidates.size() < top_k) {
+            candidates.push_back(i);
+        }
+    }
+    if (candidates.empty()) return static_cast<int>(std::distance(
+        logits.begin(), std::max_element(logits.begin(), logits.end())));
+
+    const float temperature = 0.8f;
+    const float maximum = adjusted[candidates[0]];
+    std::vector<double> probabilities(candidates.size());
+    double total = 0.0;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        probabilities[i] = std::exp((adjusted[candidates[i]] - maximum) / temperature);
+        total += probabilities[i];
+    }
+    const double sample = (next_random(random_state) / 4294967296.0) * total;
+    double cumulative = 0.0;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        cumulative += probabilities[i];
+        if (sample < cumulative) return static_cast<int>(candidates[i]);
+    }
+    return static_cast<int>(candidates[0]);
 }
 
 #ifndef GEKKO
@@ -566,15 +636,24 @@ std::string generate(const Model& model, const Tokenizer& tokenizer,
 
     Cache cache;
     std::vector<int> generated;
-    int next = 0;
+    std::vector<int> history = prompt;
+    std::vector<float> logits;
+    uint32_t random_state = 0x9e3779b9u;
     for (size_t i = 0; i < prompt.size(); ++i) {
-        next = model_step(model, cache, prompt[i], static_cast<uint32_t>(i));
+        random_state ^= static_cast<uint32_t>(prompt[i]) + 0x9e3779b9u +
+                        (random_state << 6) + (random_state >> 2);
+    }
+    if (random_state == 0) random_state = 1;
+    for (size_t i = 0; i < prompt.size(); ++i) {
+        model_step(model, cache, prompt[i], static_cast<uint32_t>(i), logits);
     }
     for (int i = 0; i < max_new_tokens && prompt.size() + generated.size() < model.context; ++i) {
+        const int next = sample_next_token(logits, history, prompt.size(), random_state);
         if (next == 0) break;
         generated.push_back(next);
-        next = model_step(model, cache, next,
-                          static_cast<uint32_t>(prompt.size() + generated.size() - 1));
+        history.push_back(next);
+        model_step(model, cache, next,
+                   static_cast<uint32_t>(prompt.size() + generated.size() - 1), logits);
     }
     return tokenizer.decode(generated);
 }

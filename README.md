@@ -51,7 +51,8 @@ does not exist.
 
 ## Build for Wii
 
-The code uses greedy decoding and a small built-in approximation of the
-tokenizer's GPT-2 byte-level pre-tokenization rules; it is intended as a
-hardware demonstration rather than a production-quality Transformers port.
-Generation is CPU-only and may be slow on Wii hardware.
+Generation uses top-k sampling with a repetition penalty and repeated-trigram
+blocking to reduce the looping that greedy decoding caused. A small built-in
+approximation of the tokenizer's GPT-2 byte-level pre-tokenization rules is
+used; this is a hardware demonstration rather than a production-quality
+Transformers port. Generation is CPU-only and may be slow on Wii hardware.
