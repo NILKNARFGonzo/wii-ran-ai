@@ -20,6 +20,13 @@ chat-wii-weights.bin
 chat-wii-tokenizer.bin
 .chat-model-data-stamp
 .chat-converted-stamp
+medium-chat-config.json
+medium-chat-model.safetensors
+medium-chat-tokenizer.json
+medium-chat-wii-weights.bin
+medium-chat-wii-tokenizer.bin
+.medium-chat-model-stamp
+.medium-chat-converted-stamp
 tokenizer-chat.json
 model-chat.safetensors
 config-chat.json

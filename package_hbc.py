@@ -13,6 +13,8 @@ FILES = {
     ROOT / "meta.xml": APP_DIR / "meta.xml",
     ROOT / "icon.png": APP_DIR / "icon.png",
     ROOT / "LICENSE": APP_DIR / "LICENSE",
+    ROOT / "medium-chat-wii-weights.bin": APP_DIR / "medium-chat-wii-weights.bin",
+    ROOT / "medium-chat-wii-tokenizer.bin": APP_DIR / "medium-chat-wii-tokenizer.bin",
 }
 
 

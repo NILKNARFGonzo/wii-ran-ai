@@ -13,6 +13,7 @@
 #include <vector>
 
 #ifdef GEKKO
+#include <fat.h>
 #include <gccore.h>
 #include <ogc/console.h>
 #include <wiikeyboard/keyboard.h>
@@ -363,9 +364,9 @@ struct Model {
     int eos_id;
     std::unordered_map<std::string, Tensor> tensors;
 
-#ifndef GEKKO
     std::vector<uint8_t> owned_bytes;
 
+#ifndef GEKKO
     void load(const char* path) {
         std::ifstream input(path, std::ios::binary | std::ios::ate);
         if (!input) throw std::runtime_error(std::string("Cannot open ") + path);
@@ -379,6 +380,27 @@ struct Model {
         load(&owned_bytes[0], owned_bytes.size());
     }
 #endif
+
+    void load_file(const char* path) {
+        FILE* file = std::fopen(path, "rb");
+        if (!file) throw std::runtime_error(std::string("Cannot open ") + path);
+        if (std::fseek(file, 0, SEEK_END) != 0) {
+            std::fclose(file);
+            throw std::runtime_error(std::string("Cannot seek ") + path);
+        }
+        const long file_size = std::ftell(file);
+        if (file_size <= 0 || std::fseek(file, 0, SEEK_SET) != 0) {
+            std::fclose(file);
+            throw std::runtime_error(std::string("Invalid model file: ") + path);
+        }
+        owned_bytes.resize(static_cast<size_t>(file_size));
+        const size_t bytes_read = std::fread(&owned_bytes[0], 1, owned_bytes.size(), file);
+        std::fclose(file);
+        if (bytes_read != owned_bytes.size()) {
+            throw std::runtime_error(std::string("Could not read model file: ") + path);
+        }
+        load(&owned_bytes[0], owned_bytes.size());
+    }
 
     void load(const uint8_t* data, size_t size) {
         BinaryReader reader(data, size);
@@ -966,7 +988,8 @@ namespace {
 std::string prompt_text;
 std::vector<std::pair<std::string, std::string> > chat_history;
 const size_t kMaxPromptLength = 256;
-const size_t kChatWiiContext = 2048;
+const size_t kNanoChatWiiContext = 2048;
+const size_t kMediumChatWiiContext = 512;
 const size_t kChatMaxReply = 64;
 const char* kKeyboardRows[] = {
     "1234567890",
@@ -1002,25 +1025,45 @@ void draw_model_menu(int selected) {
     std::printf("Wii Ran AI - select a model\n\n");
     std::printf("%s StoryBananaMind-7.5M (stories)\n",
                 selected == 0 ? ">" : " ");
-    std::printf("%s BananaMind 2 Nano Chat (experimental)\n\n",
+    std::printf("%s BananaMind 2 Nano Chat (experimental)\n",
                 selected == 1 ? ">" : " ");
+    std::printf("%s BananaMind 2 Medium Chat (experimental)\n\n",
+                selected == 2 ? ">" : " ");
     std::printf("D-pad: select   A: choose   Home: quit\n");
 }
 
+std::string lowercase_ascii(const std::string& text) {
+    std::string result = text;
+    for (size_t i = 0; i < result.size(); ++i) {
+        if (result[i] >= 'A' && result[i] <= 'Z') {
+            result[i] = static_cast<char>(result[i] - 'A' + 'a');
+        }
+    }
+    return result;
+}
+
 std::string make_chat_prompt(const Tokenizer& tokenizer,
-                             const std::string& user_message) {
+                             const std::string& user_message,
+                             size_t context,
+                             bool lowercase_user_text) {
     const std::string system_prompt = "You are a concise and helpful assistant.";
     size_t first_turn = 0;
     std::string prompt;
     while (true) {
         prompt = "<|bos|><|system|>\n" + system_prompt + "\n";
         for (size_t i = first_turn; i < chat_history.size(); ++i) {
-            prompt += "<|user|>\n" + chat_history[i].first +
+            const std::string& previous_user = chat_history[i].first;
+            prompt += "<|user|>\n" +
+                      (lowercase_user_text ? lowercase_ascii(previous_user)
+                                           : previous_user) +
                       "<|assistant|>\n" + chat_history[i].second +
                       "<|eos|>\n";
         }
-        prompt += "<|user|>\n" + user_message + "<|assistant|>\n";
-        if (tokenizer.encode(prompt).size() + kChatMaxReply <= kChatWiiContext) return prompt;
+        prompt += "<|user|>\n" +
+                  (lowercase_user_text ? lowercase_ascii(user_message)
+                                       : user_message) +
+                  "<|assistant|>\n";
+        if (tokenizer.encode(prompt).size() + kChatMaxReply <= context) return prompt;
         if (first_turn >= chat_history.size()) {
             throw std::runtime_error("Message is too long for the Wii chat context");
         }
@@ -1083,21 +1126,30 @@ int main() {
             WPAD_ScanPads();
             const int buttons = WPAD_ButtonsDown(0);
             if (buttons & WPAD_BUTTON_HOME) return 0;
-            if (buttons & WPAD_BUTTON_UP) selected_model = (selected_model + 1) % 2;
-            if (buttons & WPAD_BUTTON_DOWN) selected_model = (selected_model + 1) % 2;
+            if (buttons & WPAD_BUTTON_UP) selected_model = (selected_model + 2) % 3;
+            if (buttons & WPAD_BUTTON_DOWN) selected_model = (selected_model + 1) % 3;
             if (buttons & WPAD_BUTTON_A) break;
             VIDEO_WaitVSync();
         }
-        const bool chat_model = selected_model == 1;
-        std::printf("\nLoading %s...\n", chat_model
-                    ? "BananaMind 2 Nano Chat" : "StoryBananaMind-7.5M");
+        const bool chat_model = selected_model != 0;
+        const bool medium_chat_model = selected_model == 2;
+        std::printf("\nLoading %s...\n",
+                    selected_model == 0 ? "StoryBananaMind-7.5M" :
+                    medium_chat_model ? "BananaMind 2 Medium Chat" :
+                                        "BananaMind 2 Nano Chat");
         Model model;
         Tokenizer tokenizer;
-        if (chat_model) {
+        if (selected_model == 1) {
             model.load(chat_weights_start,
                        static_cast<size_t>(chat_weights_end - chat_weights_start));
             tokenizer.load(chat_tokenizer_start,
                            static_cast<size_t>(chat_tokenizer_end - chat_tokenizer_start));
+        } else if (medium_chat_model) {
+            if (!fatInitDefault()) {
+                throw std::runtime_error("Could not mount the SD card");
+            }
+            model.load_file("sd:/apps/wii-ran-ai/medium-chat-wii-weights.bin");
+            tokenizer.load("sd:/apps/wii-ran-ai/medium-chat-wii-tokenizer.bin");
         } else {
             model.load(story_weights_start,
                        static_cast<size_t>(story_weights_end - story_weights_start));
@@ -1149,7 +1201,12 @@ int main() {
             std::string continuation;
             try {
                 const std::string active_prompt = chat_model
-                    ? make_chat_prompt(tokenizer, prompt_text) : prompt_text;
+                    ? make_chat_prompt(
+                          tokenizer, prompt_text,
+                          medium_chat_model ? kMediumChatWiiContext
+                                            : kNanoChatWiiContext,
+                          medium_chat_model)
+                    : prompt_text;
                 continuation = generate(
                     model, tokenizer, active_prompt,
                     chat_model ? static_cast<int>(kChatMaxReply) : 80);

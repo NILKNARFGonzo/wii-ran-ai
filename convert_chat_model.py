@@ -56,15 +56,15 @@ def is_norm_tensor(name):
     )
 
 
-def write_model_package(config, tensor_items):
-    with WEIGHTS_FILE.open("wb") as output:
+def write_model_package(config, tensor_items, output_path, context):
+    with output_path.open("wb") as output:
         output.write(b"BNM1")
         output.write(struct.pack(
             ">9I2f3I",
             1,
             config["num_hidden_layers"],
             config["vocab_size"],
-            WII_CONTEXT,
+            context,
             config["hidden_size"],
             config["num_attention_heads"],
             config["num_key_value_heads"],
@@ -97,7 +97,7 @@ def write_model_package(config, tensor_items):
             output.write(raw)
 
 
-def write_tokenizer_package(tokenizer_data, config):
+def write_tokenizer_package(tokenizer_data, config, output_path):
     model = tokenizer_data["model"]
     vocab = model["vocab"]
     if len(vocab) > 0xFFFF:
@@ -124,7 +124,7 @@ def write_tokenizer_package(tokenizer_data, config):
             raise ValueError(f"Missing BPE merge token: {left!r} + {right!r}")
         merges.append((token_to_id[left], token_to_id[right], token_to_id[result]))
 
-    with TOKENIZER_FILE.open("wb") as output:
+    with output_path.open("wb") as output:
         output.write(b"TKB2")
         output.write(struct.pack(
             ">4I", len(id_to_text), len(merges), len(special_ids),
@@ -146,12 +146,13 @@ def write_tokenizer_package(tokenizer_data, config):
             output.write(struct.pack(">HHH", left, right, result))
 
 
-def main():
-    config = json.loads(CONFIG.read_text())
-    tokenizer_data = json.loads(TOKENIZER.read_text())
-    if (config["model_type"] != "bananamind2_nano" or
+def convert_model(config_path, source_path, tokenizer_path, weights_path,
+                  packed_tokenizer_path, expected_model_type, context):
+    config = json.loads(config_path.read_text())
+    tokenizer_data = json.loads(tokenizer_path.read_text())
+    if (config["model_type"] != expected_model_type or
             config["num_attention_heads"] % config["num_key_value_heads"]):
-        raise ValueError("Unsupported BananaMind Nano architecture configuration")
+        raise ValueError(f"Unsupported BananaMind architecture: {config['model_type']}")
     if tokenizer_data["model"]["type"] != "BPE":
         raise ValueError("Expected the pinned BananaMind BPE tokenizer")
     pretokenizers = tokenizer_data["pre_tokenizer"]["pretokenizers"]
@@ -160,7 +161,7 @@ def main():
         raise ValueError("Expected the digit-isolating BananaMind pre-tokenizer")
 
     tensors = []
-    with safe_open(SOURCE, framework="pt", device="cpu") as handle:
+    with safe_open(source_path, framework="pt", device="cpu") as handle:
         for name in handle.keys():
             tensor = handle.get_tensor(name)
             if name.endswith(".weight") and name.startswith("transformer.h.") and \
@@ -173,13 +174,20 @@ def main():
 
     if not any(name == "transformer.wte.weight" for name, _ in tensors):
         raise ValueError("Checkpoint is missing tied token embeddings")
-    write_model_package(config, tensors)
-    write_tokenizer_package(tokenizer_data, config)
+    write_model_package(config, tensors, weights_path, context)
+    write_tokenizer_package(tokenizer_data, config, packed_tokenizer_path)
     parameter_count = sum(tensor.numel() for _, tensor in tensors)
     print(f"Packed {len(tensors)} tensors ({parameter_count:,} parameters)")
-    print(f"Context capped to {WII_CONTEXT} tokens for bounded Wii KV-cache memory")
-    print(f"Wii weights: {WEIGHTS_FILE.stat().st_size:,} bytes")
-    print(f"Wii tokenizer: {TOKENIZER_FILE.stat().st_size:,} bytes")
+    print(f"Context capped to {context} tokens for bounded Wii KV-cache memory")
+    print(f"Wii weights: {weights_path.stat().st_size:,} bytes")
+    print(f"Wii tokenizer: {packed_tokenizer_path.stat().st_size:,} bytes")
+
+
+def main():
+    convert_model(
+        CONFIG, SOURCE, TOKENIZER, WEIGHTS_FILE, TOKENIZER_FILE,
+        "bananamind2_nano", WII_CONTEXT,
+    )
 
 
 if __name__ == "__main__":
