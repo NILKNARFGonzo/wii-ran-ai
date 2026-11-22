@@ -990,7 +990,8 @@ std::vector<std::pair<std::string, std::string> > chat_history;
 const size_t kMaxPromptLength = 256;
 const size_t kNanoChatWiiContext = 2048;
 const size_t kMediumChatWiiContext = 512;
-const size_t kChatMaxReply = 64;
+const size_t kNanoChatMaxReply = 128;
+const size_t kMediumChatMaxReply = 64;
 const char* kKeyboardRows[] = {
     "1234567890",
     "QWERTYUIOP",
@@ -1045,6 +1046,7 @@ std::string lowercase_ascii(const std::string& text) {
 std::string make_chat_prompt(const Tokenizer& tokenizer,
                              const std::string& user_message,
                              size_t context,
+                             size_t max_reply,
                              bool lowercase_user_text) {
     const std::string system_prompt = "You are a concise and helpful assistant.";
     size_t first_turn = 0;
@@ -1063,7 +1065,7 @@ std::string make_chat_prompt(const Tokenizer& tokenizer,
                   (lowercase_user_text ? lowercase_ascii(user_message)
                                        : user_message) +
                   "<|assistant|>\n";
-        if (tokenizer.encode(prompt).size() + kChatMaxReply <= context) return prompt;
+        if (tokenizer.encode(prompt).size() + max_reply <= context) return prompt;
         if (first_turn >= chat_history.size()) {
             throw std::runtime_error("Message is too long for the Wii chat context");
         }
@@ -1205,11 +1207,17 @@ int main() {
                           tokenizer, prompt_text,
                           medium_chat_model ? kMediumChatWiiContext
                                             : kNanoChatWiiContext,
+                          medium_chat_model ? kMediumChatMaxReply
+                                            : kNanoChatMaxReply,
                           medium_chat_model)
                     : prompt_text;
                 continuation = generate(
                     model, tokenizer, active_prompt,
-                    chat_model ? static_cast<int>(kChatMaxReply) : 80);
+                    chat_model
+                        ? static_cast<int>(medium_chat_model
+                                               ? kMediumChatMaxReply
+                                               : kNanoChatMaxReply)
+                        : 80);
             } catch (const std::exception& e) {
                 consoleClear();
                 std::printf("Could not generate a reply:\n%s\n\n", e.what());

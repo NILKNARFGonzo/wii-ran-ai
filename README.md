@@ -18,8 +18,9 @@ Wii Ran AI is a local C++ text generator for the Wii with a model picker:
 The Wii build quantizes each model's non-normalization tensors to INT8 while
 keeping normalization weights in float32; activations and KV cache are
 float32. Story context stays at 256 tokens; Nano Chat context is capped at
-2,048 tokens (20 MiB maximum KV cache), while Medium Chat uses a 512-token
-context (6 MiB maximum KV cache), with 64 tokens reserved for replies. Their
+2,048 tokens (20 MiB maximum KV cache), with 128 tokens reserved for replies.
+Medium Chat uses a 512-token context (6 MiB maximum KV cache), with 64 tokens
+reserved for replies. Their
 official contexts are not exposed in full. The `.dol` embeds StoryBananaMind
 and Nano Chat; Medium Chat's quantized weights and tokenizer are included as
 separate SD-card files because of their size. No network connection is needed
@@ -44,9 +45,10 @@ at runtime. The chat checkpoints are pinned to upstream revisions
    the selected model's Wii memory budget. Press **Home** to quit.
 
 Inputs are limited to 256 characters. Story generation is limited to 80 tokens
-or the story model's 256-token context; chat replies are limited to 64 tokens
-within the 2,048-token Wii chat context. Up to 32 recent turns are retained,
-trimmed as needed to fit the context. BananaMind Nano Chat is experimental and
+or the story model's 256-token context; Nano Chat replies are limited to 128
+tokens and Medium Chat replies to 64 within their Wii context budgets. Up to 32
+recent turns are retained, trimmed as needed to fit the context. BananaMind
+Nano Chat is experimental and
 not reliable for general assistance: its model card reports 35 passed examples
 out of 300 (9.15%) on its self-reported instruction benchmark and warns that it
 may fail arithmetic, hallucinate facts, or produce invalid output. The Wii app
