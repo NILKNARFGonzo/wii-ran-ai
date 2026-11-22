@@ -15,6 +15,8 @@ FILES = {
     ROOT / "LICENSE": APP_DIR / "LICENSE",
     ROOT / "medium-chat-wii-weights.bin": APP_DIR / "medium-chat-wii-weights.bin",
     ROOT / "medium-chat-wii-tokenizer.bin": APP_DIR / "medium-chat-wii-tokenizer.bin",
+    ROOT / "nano-continuation-wii-weights.bin": APP_DIR / "nano-continuation-wii-weights.bin",
+    ROOT / "nano-continuation-wii-tokenizer.bin": APP_DIR / "nano-continuation-wii-tokenizer.bin",
 }
 
 

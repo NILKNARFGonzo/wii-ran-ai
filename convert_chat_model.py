@@ -163,6 +163,8 @@ def convert_model(config_path, source_path, tokenizer_path, weights_path,
     tensors = []
     with safe_open(source_path, framework="pt", device="cpu") as handle:
         for name in handle.keys():
+            if name == "lm_head.weight" and config.get("tie_word_embeddings", False):
+                continue
             tensor = handle.get_tensor(name)
             if name.endswith(".weight") and name.startswith("transformer.h.") and \
                     any(suffix in name for suffix in (

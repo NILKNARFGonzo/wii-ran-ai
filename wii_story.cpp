@@ -925,7 +925,8 @@ std::string read_prompt(const char* path) {
 #endif
 
 std::string generate(const Model& model, const Tokenizer& tokenizer,
-                     const std::string& prompt_text, int max_new_tokens) {
+                     const std::string& prompt_text, int max_new_tokens,
+                     bool use_sampling) {
     std::vector<int> prompt = tokenizer.encode(prompt_text);
     if (prompt.empty()) prompt.push_back(0);
     if (prompt.size() > model.context) {
@@ -947,7 +948,7 @@ std::string generate(const Model& model, const Tokenizer& tokenizer,
     }
     for (int i = 0; i < max_new_tokens && prompt.size() + generated.size() < model.context; ++i) {
         const int next = sample_next_token(
-            logits, history, prompt.size(), random_state, model.architecture == 1);
+            logits, history, prompt.size(), random_state, use_sampling);
         if (next == model.eos_id) break;
         generated.push_back(next);
         history.push_back(next);
@@ -959,12 +960,14 @@ std::string generate(const Model& model, const Tokenizer& tokenizer,
 
 #ifndef GEKKO
 void run(const char* weights_path, const char* tokenizer_path,
-         const char* prompt_path, int max_new_tokens) {
+         const char* prompt_path, int max_new_tokens, bool requested_sampling) {
     Model model;
     Tokenizer tokenizer;
     model.load(weights_path);
     tokenizer.load(tokenizer_path);
-    std::cout << generate(model, tokenizer, read_prompt(prompt_path), max_new_tokens)
+    const bool use_sampling = model.architecture == 1 || requested_sampling;
+    std::cout << generate(model, tokenizer, read_prompt(prompt_path), max_new_tokens,
+                          use_sampling)
               << std::endl;
 }
 #endif
@@ -990,6 +993,7 @@ std::vector<std::pair<std::string, std::string> > chat_history;
 const size_t kMaxPromptLength = 256;
 const size_t kNanoChatWiiContext = 2048;
 const size_t kMediumChatWiiContext = 512;
+const size_t kNanoContinuationWiiContext = 2048;
 const size_t kNanoChatMaxReply = 128;
 const size_t kMediumChatMaxReply = 64;
 const char* kKeyboardRows[] = {
@@ -1044,10 +1048,12 @@ void draw_model_menu(int selected) {
     std::printf("Wii Ran AI - select a model\n\n");
     std::printf("%s StoryBananaMind-7.5M (stories)\n",
                 selected == 0 ? ">" : " ");
-    std::printf("%s BananaMind 2 Nano Chat (experimental)\n",
+    std::printf("%s BananaMind 2 Nano Continue\n",
                 selected == 1 ? ">" : " ");
-    std::printf("%s BananaMind 2 Medium Chat (experimental)\n\n",
+    std::printf("%s BananaMind 2 Nano Chat (experimental)\n",
                 selected == 2 ? ">" : " ");
+    std::printf("%s BananaMind 2 Medium Chat (experimental)\n\n",
+                selected == 3 ? ">" : " ");
     std::printf("D-pad: select   A: choose   Home: quit\n");
 }
 
@@ -1091,10 +1097,12 @@ std::string make_chat_prompt(const Tokenizer& tokenizer,
     }
 }
 
-void draw_input_screen(bool usb_keyboard, bool chat_model) {
+void draw_input_screen(bool usb_keyboard, bool chat_model,
+                       bool continuation_model) {
     consoleClear();
-    std::printf(chat_model ? "BananaMind Chat - enter a message\n\n"
-                           : "Wii Ran AI - type a story prompt\n\n");
+    std::printf(chat_model ? "BananaMind Chat - enter a message\n\n" :
+                continuation_model ? "Nano Continue - enter a text prompt\n\n" :
+                                     "Wii Ran AI - type a story prompt\n\n");
     if (chat_model) {
         std::printf("Experimental: replies may be wrong or incoherent.\n\n");
     }
@@ -1149,20 +1157,28 @@ int main() {
             WPAD_ScanPads();
             const int buttons = WPAD_ButtonsDown(0);
             if (buttons & WPAD_BUTTON_HOME) return 0;
-            if (buttons & WPAD_BUTTON_UP) selected_model = (selected_model + 2) % 3;
-            if (buttons & WPAD_BUTTON_DOWN) selected_model = (selected_model + 1) % 3;
+            if (buttons & WPAD_BUTTON_UP) selected_model = (selected_model + 3) % 4;
+            if (buttons & WPAD_BUTTON_DOWN) selected_model = (selected_model + 1) % 4;
             if (buttons & WPAD_BUTTON_A) break;
             VIDEO_WaitVSync();
         }
-        const bool chat_model = selected_model != 0;
-        const bool medium_chat_model = selected_model == 2;
+        const bool nano_continuation_model = selected_model == 1;
+        const bool chat_model = selected_model >= 2;
+        const bool medium_chat_model = selected_model == 3;
         std::printf("\nLoading %s...\n",
                     selected_model == 0 ? "StoryBananaMind-7.5M" :
-                    medium_chat_model ? "BananaMind 2 Medium Chat" :
-                                        "BananaMind 2 Nano Chat");
+                    nano_continuation_model ? "BananaMind 2 Nano" :
+                    selected_model == 2 ? "BananaMind 2 Nano Chat" :
+                                          "BananaMind 2 Medium Chat");
         Model model;
         Tokenizer tokenizer;
-        if (selected_model == 1) {
+        if (nano_continuation_model) {
+            if (!fatInitDefault()) {
+                throw std::runtime_error("Could not mount the SD card");
+            }
+            model.load_file("sd:/apps/wii-ran-ai/nano-continuation-wii-weights.bin");
+            tokenizer.load("sd:/apps/wii-ran-ai/nano-continuation-wii-tokenizer.bin");
+        } else if (selected_model == 2) {
             model.load(chat_weights_start,
                        static_cast<size_t>(chat_weights_end - chat_weights_start));
             tokenizer.load(chat_tokenizer_start,
@@ -1184,7 +1200,8 @@ int main() {
         int previous_buttons = 0;
         std::string previous_prompt;
         while (true) {
-            draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model);
+            draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model,
+                              nano_continuation_model);
             bool generate_story = false;
             while (!generate_story) {
                 WPAD_ScanPads();
@@ -1215,15 +1232,18 @@ int main() {
                 }
                 if (buttons & WPAD_BUTTON_PLUS) generate_story = true;
                 if (buttons != previous_buttons || prompt_text != previous_prompt) {
-                    draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model);
+                    draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(),
+                                      chat_model, nano_continuation_model);
                 }
                 previous_buttons = buttons;
                 previous_prompt = prompt_text;
                 VIDEO_WaitVSync();
             }
 
-            draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model);
-            std::printf("\n\n%s...\n", chat_model ? "Thinking" : "Generating");
+            draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model,
+                              nano_continuation_model);
+            std::printf("\n\n%s...\n", chat_model ? "Thinking" :
+                        nano_continuation_model ? "Continuing" : "Generating");
             std::string continuation;
             try {
                 const std::string active_prompt = chat_model
@@ -1241,7 +1261,8 @@ int main() {
                         ? static_cast<int>(medium_chat_model
                                                ? kMediumChatMaxReply
                                                : kNanoChatMaxReply)
-                        : 80);
+                        : nano_continuation_model ? 128 : 80,
+                    !chat_model);
             } catch (const std::exception& e) {
                 consoleClear();
                 std::printf("Could not generate a reply:\n%s\n\n", e.what());
@@ -1286,8 +1307,9 @@ int main(int argc, char** argv) {
     const char* tokenizer = argc > 2 ? argv[2] : "story-wii-tokenizer.bin";
     const char* prompt = argc > 3 ? argv[3] : "prompt.txt";
     const int max_new_tokens = argc > 4 ? std::atoi(argv[4]) : 32;
+    const bool use_sampling = argc > 5 && std::atoi(argv[5]) != 0;
     try {
-        run(weights, tokenizer, prompt, max_new_tokens);
+        run(weights, tokenizer, prompt, max_new_tokens, use_sampling);
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         return 1;

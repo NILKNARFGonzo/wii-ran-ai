@@ -4,6 +4,9 @@ Wii Ran AI is a local C++ text generator for the Wii with a model picker:
 
 - **Stories:** [StoryBananaMind-7.5M](https://huggingface.co/BananaMind/StoryBananaMind-7.5M),
   a 7.5M-parameter GPT-2 story model.
+- **Continuation:** [BananaMind 2 Nano](https://huggingface.co/BananaMind/BananaMind-2-Nano),
+  a 9,968,128-parameter pretrained causal language model for continuing raw
+  text prompts. This Apache-2.0 base model is not instruction/chat tuned.
 - **Chat:** [BananaMind 2 Nano Chat](https://huggingface.co/BananaMind/BananaMind-2-Nano-Chat),
   an experimental 9,968,128-parameter, full-parameter supervised fine-tune of
   BananaMind 2 Nano on Smol-SmolTalk. Its upstream card describes a 10-layer
@@ -17,15 +20,17 @@ Wii Ran AI is a local C++ text generator for the Wii with a model picker:
 
 The Wii build quantizes each model's non-normalization tensors to INT8 while
 keeping normalization weights in float32; activations and KV cache are
-float32. Story context stays at 256 tokens; Nano Chat context is capped at
-2,048 tokens (20 MiB maximum KV cache), with 128 tokens reserved for replies.
+float32. Story context stays at 256 tokens; Nano continuation and Nano Chat
+contexts are capped at 2,048 tokens (20 MiB maximum KV cache), with 128 tokens
+reserved for output.
 Medium Chat uses a 512-token context (6 MiB maximum KV cache), with 64 tokens
 reserved for replies. Their
 official contexts are not exposed in full. The `.dol` embeds StoryBananaMind
-and Nano Chat; Medium Chat's quantized weights and tokenizer are included as
-separate SD-card files because of their size. No network connection is needed
-at runtime. The chat checkpoints are pinned to upstream revisions
-`6def7ab4d1bd8449d9b75b62bfb174f73d3a8ad6` (Nano) and
+and Nano Chat; Nano continuation and Medium Chat weights and
+tokenizers are included as separate SD-card files because of their size. No
+network connection is needed at runtime. The model checkpoints are pinned to
+upstream revisions `c8564d1bd3f6177221ed7e4f63ae5f281a677a1c` (Nano base),
+`6def7ab4d1bd8449d9b75b62bfb174f73d3a8ad6` (Nano Chat), and
 `86bfcd9075e54a7da8aa101d9ba2ca819fa59143` (Medium).
 
 ## Use on Wii
@@ -35,16 +40,18 @@ at runtime. The chat checkpoints are pinned to upstream revisions
    `apps/wii-ran-ai/boot.dol`.
 2. Launch **Wii Ran AI** from the Homebrew Channel.
 3. Use the D-pad and **A** to select a model. Choose Stories for prompt
-   continuation, Nano Chat for the smaller assistant, or Medium Chat for the
-   larger assistant.
+   continuation, Nano Continue for raw text completion, Nano Chat for the
+   smaller assistant, or Medium Chat for the larger assistant.
 4. Type with a USB keyboard, or use the Wii Remote D-pad to select on-screen
    letters, numbers, and symbols. Press **A** to type, **B** to delete,
    **1** for one-key Shift/symbols, **2** to toggle Caps Lock, **Minus** for a
-   space, and **Plus** to generate a story or chat reply. Shift is consumed by
-   the next on-screen key; Caps Lock changes on-screen letter case.
+   space, and **Plus** to generate a story, continue text, or get a chat reply.
+   Shift is consumed by the next on-screen key; Caps Lock changes on-screen
+   letter case.
 5. Press **A** or **Plus** after a response to enter another prompt/message.
    The chat model retains up to 32 recent turns, trimming older context to fit
-   the selected model's Wii memory budget. Press **Home** to quit.
+   the selected model's Wii memory budget. Press **Home** to quit. For Nano
+   Continue, enter a prefix or passage and the base model will continue it.
 
 Inputs are limited to 256 characters. Story generation is limited to 80 tokens
 or the story model's 256-token context; Nano Chat replies are limited to 128
@@ -61,6 +68,10 @@ limited to 64 tokens. Its approximately 50 MB packed model file must remain at
 `apps/wii-ran-ai/medium-chat-wii-weights.bin` on the SD card, alongside
 `medium-chat-wii-tokenizer.bin`. Medium Chat lowercases ASCII user input before
 tokenization to accommodate the Wii Remote keyboard's uppercase-only keys.
+Nano Continue samples continuations from the pretrained base model; it does not
+follow chat instructions. Its approximately 10 MB packed weights and tokenizer
+must remain at `apps/wii-ran-ai/nano-continuation-wii-weights.bin` and
+`nano-continuation-wii-tokenizer.bin`.
 
 ## Build from source
 
@@ -72,14 +83,16 @@ python3 -m pip install torch numpy safetensors
 python3 download_model.py
 python3 download_chat_model.py
 python3 download_medium_chat_model.py
+python3 download_nano_continuation_model.py
 make
 ```
 
-`make` downloads the pinned StoryBananaMind, Nano Chat, and Medium Chat
-checkpoints, converts them to the Wii runtime format, builds the Wii DOL, and
-creates `wii-ran-ai-hbc.zip`. Extract that ZIP to the root of an SD card; it
-includes the separate Medium Chat model files. The archive also includes the
-Apache-2.0 license text. All three checkpoints are Apache-2.0.
+`make` downloads the pinned StoryBananaMind, Nano base and Chat, and Medium
+Chat checkpoints, converts them to the Wii runtime format, builds the Wii DOL,
+and creates `wii-ran-ai-hbc.zip`. Extract that ZIP to the root of an SD card;
+it includes the separate Nano continuation and Medium Chat model files. The
+archive also includes the Apache-2.0 license text. All checkpoints are
+Apache-2.0.
 
 ## Test on a computer
 
@@ -91,6 +104,13 @@ g++ -O3 -std=c++11 wii_story.cpp -o wii_story_host
 Arguments are weights path, tokenizer path, prompt text-file path, and the
 maximum number of new tokens. The default prompt is used if the prompt file
 does not exist.
+
+For sampled Nano continuation, use:
+
+```sh
+./wii_story_host nano-continuation-wii-weights.bin \
+  nano-continuation-wii-tokenizer.bin prompt.txt 128 1
+```
 
 For a Nano Chat host smoke test, write a model-native prompt to a text file:
 
