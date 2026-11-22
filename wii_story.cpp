@@ -966,7 +966,7 @@ namespace {
 std::string prompt_text;
 std::vector<std::pair<std::string, std::string> > chat_history;
 const size_t kMaxPromptLength = 256;
-const size_t kChatWiiContext = 384;
+const size_t kChatWiiContext = 2048;
 const size_t kChatMaxReply = 64;
 const char* kKeyboardRows[] = {
     "1234567890",
@@ -1161,7 +1161,7 @@ int main() {
             }
             if (chat_model) {
                 chat_history.push_back(std::make_pair(prompt_text, continuation));
-                if (chat_history.size() > 8) chat_history.erase(chat_history.begin());
+                if (chat_history.size() > 32) chat_history.erase(chat_history.begin());
                 std::printf("\nYou: %s\n\nAssistant: %s\n\n",
                             prompt_text.c_str(), continuation.c_str());
             } else {

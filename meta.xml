@@ -2,9 +2,9 @@
 <app version="1">
   <name>Wii Ran AI</name>
   <coder>NILKNARFGonzo</coder>
-  <version>1.1.1</version>
+  <version>1.1.2</version>
   <release_date>20261121000000</release_date>
   <short_description>Local stories and chat on your Wii</short_description>
-  <long_description>Choose StoryBananaMind-7.5M for stories or BananaMind 2 Nano Chat for short multi-turn replies. Both run locally offline. D-pad moves/selects, A chooses/types, B deletes, Minus spaces, Plus generates, Home quits. 256-char input; 384-token chat context.</long_description>
+  <long_description>Choose StoryBananaMind-7.5M for stories or BananaMind 2 Nano Chat for short multi-turn replies. Both run locally offline. D-pad moves/selects, A chooses/types, B deletes, Minus spaces, Plus generates, Home quits. 256-char input; 2,048-token chat context.</long_description>
   <ahb_access />
 </app>

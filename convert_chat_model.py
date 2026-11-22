@@ -16,7 +16,7 @@ CONFIG = ROOT / "chat-config.json"
 TOKENIZER = ROOT / "chat-tokenizer.json"
 WEIGHTS_FILE = ROOT / "chat-wii-weights.bin"
 TOKENIZER_FILE = ROOT / "chat-wii-tokenizer.bin"
-WII_CONTEXT = 384
+WII_CONTEXT = 2048
 
 
 def bytelevel_map():
