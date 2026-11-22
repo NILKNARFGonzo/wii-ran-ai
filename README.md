@@ -68,9 +68,11 @@ limited to 64 tokens. Its approximately 50 MB packed model file must remain at
 `apps/wii-ran-ai/medium-chat-wii-weights.bin` on the SD card, alongside
 `medium-chat-wii-tokenizer.bin`. Medium Chat lowercases ASCII user input before
 tokenization to accommodate the Wii Remote keyboard's uppercase-only keys.
-Nano Continue samples continuations from the pretrained base model; it does not
-follow chat instructions. Its approximately 10 MB packed weights and tokenizer
-must remain at `apps/wii-ran-ai/nano-continuation-wii-weights.bin` and
+Nano Continue samples continuations from the pretrained base model with a fresh
+Wii-clock-derived random seed on each generation; repeating the same prompt can
+produce different text. It does not follow chat instructions. Its approximately
+10 MB packed weights and tokenizer must remain at
+`apps/wii-ran-ai/nano-continuation-wii-weights.bin` and
 `nano-continuation-wii-tokenizer.bin`.
 
 ## Build from source
@@ -130,7 +132,8 @@ Then run:
 ## Build for Wii
 
 Story generation uses top-k sampling with a repetition penalty and repeated
-trigram blocking. Chat uses deterministic decoding with the upstream 1.1
+trigram blocking and a fresh time-derived seed per generation. Chat uses
+deterministic decoding with the upstream 1.1
 repetition penalty and BananaMind role markers,
 special token IDs, digit-isolated byte-level BPE, QK RMSNorm, rotary position
 embeddings, grouped-query attention, and SwiGLU blocks. The tokenizer's

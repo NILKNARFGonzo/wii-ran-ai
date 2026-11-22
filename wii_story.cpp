@@ -1,9 +1,11 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -914,6 +916,24 @@ int sample_next_token(const std::vector<float>& logits,
     return static_cast<int>(candidates[0]);
 }
 
+uint32_t generation_seed() {
+    static uint32_t sequence = 0x9e3779b9u;
+    sequence += 0x6d2b79f5u;
+#ifdef GEKKO
+    const uint64_t ticks = SYS_Time();
+    uint32_t seed = static_cast<uint32_t>(ticks) ^
+                    static_cast<uint32_t>(ticks >> 32) ^
+                    static_cast<uint32_t>(std::time(NULL));
+#else
+    const uint64_t ticks = static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    uint32_t seed = static_cast<uint32_t>(ticks) ^
+                    static_cast<uint32_t>(ticks >> 32);
+#endif
+    seed ^= sequence;
+    return seed ? seed : 1u;
+}
+
 #ifndef GEKKO
 std::string read_prompt(const char* path) {
     std::ifstream input(path, std::ios::binary);
@@ -937,7 +957,7 @@ std::string generate(const Model& model, const Tokenizer& tokenizer,
     std::vector<int> generated;
     std::vector<int> history = prompt;
     std::vector<float> logits;
-    uint32_t random_state = 0x9e3779b9u;
+    uint32_t random_state = generation_seed();
     for (size_t i = 0; i < prompt.size(); ++i) {
         random_state ^= static_cast<uint32_t>(prompt[i]) + 0x9e3779b9u +
                         (random_state << 6) + (random_state >> 2);
