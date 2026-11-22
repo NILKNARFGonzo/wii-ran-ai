@@ -966,7 +966,7 @@ namespace {
 std::string prompt_text;
 std::vector<std::pair<std::string, std::string> > chat_history;
 const size_t kMaxPromptLength = 256;
-const size_t kChatWiiContext = 256;
+const size_t kChatWiiContext = 384;
 const size_t kChatMaxReply = 64;
 const char* kKeyboardRows[] = {
     "1234567890",
