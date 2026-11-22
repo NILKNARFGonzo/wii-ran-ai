@@ -1,9 +1,11 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -13,6 +15,7 @@
 #include <vector>
 
 #ifdef GEKKO
+#include <fat.h>
 #include <gccore.h>
 #include <ogc/console.h>
 #include <wiikeyboard/keyboard.h>
@@ -363,9 +366,9 @@ struct Model {
     int eos_id;
     std::unordered_map<std::string, Tensor> tensors;
 
-#ifndef GEKKO
     std::vector<uint8_t> owned_bytes;
 
+#ifndef GEKKO
     void load(const char* path) {
         std::ifstream input(path, std::ios::binary | std::ios::ate);
         if (!input) throw std::runtime_error(std::string("Cannot open ") + path);
@@ -379,6 +382,27 @@ struct Model {
         load(&owned_bytes[0], owned_bytes.size());
     }
 #endif
+
+    void load_file(const char* path) {
+        FILE* file = std::fopen(path, "rb");
+        if (!file) throw std::runtime_error(std::string("Cannot open ") + path);
+        if (std::fseek(file, 0, SEEK_END) != 0) {
+            std::fclose(file);
+            throw std::runtime_error(std::string("Cannot seek ") + path);
+        }
+        const long file_size = std::ftell(file);
+        if (file_size <= 0 || std::fseek(file, 0, SEEK_SET) != 0) {
+            std::fclose(file);
+            throw std::runtime_error(std::string("Invalid model file: ") + path);
+        }
+        owned_bytes.resize(static_cast<size_t>(file_size));
+        const size_t bytes_read = std::fread(&owned_bytes[0], 1, owned_bytes.size(), file);
+        std::fclose(file);
+        if (bytes_read != owned_bytes.size()) {
+            throw std::runtime_error(std::string("Could not read model file: ") + path);
+        }
+        load(&owned_bytes[0], owned_bytes.size());
+    }
 
     void load(const uint8_t* data, size_t size) {
         BinaryReader reader(data, size);
@@ -824,9 +848,11 @@ int sample_next_token(const std::vector<float>& logits,
                       const std::vector<int>& history,
                       size_t prompt_length,
                       uint32_t& random_state,
-                      bool use_sampling) {
+                      bool use_sampling,
+                      bool chat_sampling) {
     std::vector<float> adjusted = logits;
-    const float repetition_penalty = use_sampling ? 1.15f : 1.1f;
+    const float repetition_penalty = chat_sampling ? 1.1f :
+                                     use_sampling ? 1.15f : 1.1f;
     for (size_t i = prompt_length; i < history.size(); ++i) {
         const int token = history[i];
         if (token >= 0 && static_cast<size_t>(token) < adjusted.size()) {
@@ -836,7 +862,7 @@ int sample_next_token(const std::vector<float>& logits,
         }
     }
 
-    if (use_sampling && history.size() >= 2) {
+    if (use_sampling && !chat_sampling && history.size() >= 2) {
         const int previous_a = history[history.size() - 2];
         const int previous_b = history[history.size() - 1];
         for (size_t i = 0; i + 2 < history.size(); ++i) {
@@ -892,6 +918,24 @@ int sample_next_token(const std::vector<float>& logits,
     return static_cast<int>(candidates[0]);
 }
 
+uint32_t generation_seed() {
+    static uint32_t sequence = 0x9e3779b9u;
+    sequence += 0x6d2b79f5u;
+#ifdef GEKKO
+    const uint64_t ticks = SYS_Time();
+    uint32_t seed = static_cast<uint32_t>(ticks) ^
+                    static_cast<uint32_t>(ticks >> 32) ^
+                    static_cast<uint32_t>(std::time(NULL));
+#else
+    const uint64_t ticks = static_cast<uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    uint32_t seed = static_cast<uint32_t>(ticks) ^
+                    static_cast<uint32_t>(ticks >> 32);
+#endif
+    seed ^= sequence;
+    return seed ? seed : 1u;
+}
+
 #ifndef GEKKO
 std::string read_prompt(const char* path) {
     std::ifstream input(path, std::ios::binary);
@@ -903,7 +947,8 @@ std::string read_prompt(const char* path) {
 #endif
 
 std::string generate(const Model& model, const Tokenizer& tokenizer,
-                     const std::string& prompt_text, int max_new_tokens) {
+                     const std::string& prompt_text, int max_new_tokens,
+                     bool use_sampling, bool chat_sampling = false) {
     std::vector<int> prompt = tokenizer.encode(prompt_text);
     if (prompt.empty()) prompt.push_back(0);
     if (prompt.size() > model.context) {
@@ -914,7 +959,7 @@ std::string generate(const Model& model, const Tokenizer& tokenizer,
     std::vector<int> generated;
     std::vector<int> history = prompt;
     std::vector<float> logits;
-    uint32_t random_state = 0x9e3779b9u;
+    uint32_t random_state = generation_seed();
     for (size_t i = 0; i < prompt.size(); ++i) {
         random_state ^= static_cast<uint32_t>(prompt[i]) + 0x9e3779b9u +
                         (random_state << 6) + (random_state >> 2);
@@ -925,7 +970,8 @@ std::string generate(const Model& model, const Tokenizer& tokenizer,
     }
     for (int i = 0; i < max_new_tokens && prompt.size() + generated.size() < model.context; ++i) {
         const int next = sample_next_token(
-            logits, history, prompt.size(), random_state, model.architecture == 1);
+            logits, history, prompt.size(), random_state, use_sampling,
+            chat_sampling);
         if (next == model.eos_id) break;
         generated.push_back(next);
         history.push_back(next);
@@ -937,12 +983,14 @@ std::string generate(const Model& model, const Tokenizer& tokenizer,
 
 #ifndef GEKKO
 void run(const char* weights_path, const char* tokenizer_path,
-         const char* prompt_path, int max_new_tokens) {
+         const char* prompt_path, int max_new_tokens, bool requested_sampling) {
     Model model;
     Tokenizer tokenizer;
     model.load(weights_path);
     tokenizer.load(tokenizer_path);
-    std::cout << generate(model, tokenizer, read_prompt(prompt_path), max_new_tokens)
+    const bool use_sampling = model.architecture == 1 || requested_sampling;
+    std::cout << generate(model, tokenizer, read_prompt(prompt_path), max_new_tokens,
+                          use_sampling, model.architecture == 2 && requested_sampling)
               << std::endl;
 }
 #endif
@@ -966,16 +1014,27 @@ namespace {
 std::string prompt_text;
 std::vector<std::pair<std::string, std::string> > chat_history;
 const size_t kMaxPromptLength = 256;
-const size_t kChatWiiContext = 256;
-const size_t kChatMaxReply = 64;
+const size_t kNanoChatWiiContext = 2048;
+const size_t kMediumChatWiiContext = 512;
+const size_t kNanoContinuationWiiContext = 2048;
+const size_t kNanoChatMaxReply = 128;
+const size_t kMediumChatMaxReply = 64;
 const char* kKeyboardRows[] = {
     "1234567890",
     "QWERTYUIOP",
     "ASDFGHJKL ",
     "ZXCVBNM.,?!"
 };
+const char* kShiftedKeyboardRows[] = {
+    "!@#$%^&*()",
+    "-_=+[]{}\\~",
+    ";:'\",<>./?",
+    "(){}<>[]|~"
+};
 int key_row = 0;
 int key_column = 0;
+bool shift_active = false;
+bool caps_lock = false;
 
 void on_usb_key(char symbol) {
     if (symbol == '\b' || symbol == 0x7f) {
@@ -997,32 +1056,63 @@ void move_cursor(int row_delta, int column_delta) {
     }
 }
 
+char keyboard_key(int row, int column) {
+    if (shift_active) return kShiftedKeyboardRows[row][column];
+    char key = kKeyboardRows[row][column];
+    if (key >= 'A' && key <= 'Z') {
+        const bool uppercase = caps_lock;
+        if (!uppercase) key = static_cast<char>(key - 'A' + 'a');
+    }
+    return key;
+}
+
 void draw_model_menu(int selected) {
     consoleClear();
     std::printf("Wii Ran AI - select a model\n\n");
     std::printf("%s StoryBananaMind-7.5M (stories)\n",
                 selected == 0 ? ">" : " ");
-    std::printf("%s BananaMind 2 Nano Chat (assistant)\n\n",
+    std::printf("%s BananaMind 2 Nano Continue\n",
                 selected == 1 ? ">" : " ");
+    std::printf("%s BananaMind 2 Nano Chat (experimental)\n",
+                selected == 2 ? ">" : " ");
+    std::printf("%s BananaMind 2 Medium Chat (experimental)\n\n",
+                selected == 3 ? ">" : " ");
     std::printf("D-pad: select   A: choose   Home: quit\n");
 }
 
+std::string lowercase_ascii(const std::string& text) {
+    std::string result = text;
+    for (size_t i = 0; i < result.size(); ++i) {
+        if (result[i] >= 'A' && result[i] <= 'Z') {
+            result[i] = static_cast<char>(result[i] - 'A' + 'a');
+        }
+    }
+    return result;
+}
+
 std::string make_chat_prompt(const Tokenizer& tokenizer,
-                             const std::string& user_message) {
-    const std::string system_prompt =
-        "You are BananaMind, a friendly and concise assistant. "
-        "Answer directly, be honest when you are unsure, and keep explanations clear.";
+                             const std::string& user_message,
+                             size_t context,
+                             size_t max_reply,
+                             bool lowercase_user_text) {
+    const std::string system_prompt = "You are a concise and helpful assistant.";
     size_t first_turn = 0;
     std::string prompt;
     while (true) {
         prompt = "<|bos|><|system|>\n" + system_prompt + "\n";
         for (size_t i = first_turn; i < chat_history.size(); ++i) {
-            prompt += "<|user|>\n" + chat_history[i].first +
+            const std::string& previous_user = chat_history[i].first;
+            prompt += "<|user|>\n" +
+                      (lowercase_user_text ? lowercase_ascii(previous_user)
+                                           : previous_user) +
                       "<|assistant|>\n" + chat_history[i].second +
                       "<|eos|>\n";
         }
-        prompt += "<|user|>\n" + user_message + "<|assistant|>\n";
-        if (tokenizer.encode(prompt).size() + kChatMaxReply <= kChatWiiContext) return prompt;
+        prompt += "<|user|>\n" +
+                  (lowercase_user_text ? lowercase_ascii(user_message)
+                                       : user_message) +
+                  "<|assistant|>\n";
+        if (tokenizer.encode(prompt).size() + max_reply <= context) return prompt;
         if (first_turn >= chat_history.size()) {
             throw std::runtime_error("Message is too long for the Wii chat context");
         }
@@ -1030,10 +1120,15 @@ std::string make_chat_prompt(const Tokenizer& tokenizer,
     }
 }
 
-void draw_input_screen(bool usb_keyboard, bool chat_model) {
+void draw_input_screen(bool usb_keyboard, bool chat_model,
+                       bool continuation_model) {
     consoleClear();
-    std::printf(chat_model ? "BananaMind Chat - enter a message\n\n"
-                           : "Wii Ran AI - type a story prompt\n\n");
+    std::printf(chat_model ? "BananaMind Chat - enter a message\n\n" :
+                continuation_model ? "Nano Continue - enter a text prompt\n\n" :
+                                     "Wii Ran AI - type a story prompt\n\n");
+    if (chat_model) {
+        std::printf("Experimental: replies may be wrong or incoherent.\n\n");
+    }
     std::printf("Prompt (max %u chars):\n%s_\n\n",
                 static_cast<unsigned>(kMaxPromptLength), prompt_text.c_str());
     if (usb_keyboard) {
@@ -1041,10 +1136,12 @@ void draw_input_screen(bool usb_keyboard, bool chat_model) {
     } else {
         std::printf("USB keyboard not detected; use Wii Remote\n");
     }
-    std::printf("\n");
+    std::printf("1: Shift %s   2: Caps Lock %s\n\n",
+                shift_active ? "ON" : "off",
+                caps_lock ? "ON" : "off");
     for (int row = 0; row < 4; ++row) {
         for (int column = 0; column < 10; ++column) {
-            const char key = kKeyboardRows[row][column];
+            const char key = keyboard_key(row, column);
             if (key == ' ') {
                 std::printf("    ");
             } else if (row == key_row && column == key_column) {
@@ -1056,7 +1153,8 @@ void draw_input_screen(bool usb_keyboard, bool chat_model) {
         std::printf("\n");
     }
     std::printf("\nRemote: D-pad move, A type, B delete\n");
-    std::printf("Minus: space   Plus: generate   Home: quit\n");
+    std::printf("1: Shift/symbols (one key)   2: Caps Lock\n");
+    std::printf("Minus: space   Plus: generate   Home: model selection\n");
 }
 
 }  // namespace
@@ -1078,109 +1176,161 @@ int main() {
     try {
         int selected_model = 0;
         while (true) {
-            draw_model_menu(selected_model);
-            WPAD_ScanPads();
-            const int buttons = WPAD_ButtonsDown(0);
-            if (buttons & WPAD_BUTTON_HOME) return 0;
-            if (buttons & WPAD_BUTTON_UP) selected_model = (selected_model + 1) % 2;
-            if (buttons & WPAD_BUTTON_DOWN) selected_model = (selected_model + 1) % 2;
-            if (buttons & WPAD_BUTTON_A) break;
-            VIDEO_WaitVSync();
-        }
-        const bool chat_model = selected_model == 1;
-        std::printf("\nLoading %s...\n", chat_model
-                    ? "BananaMind 2 Nano Chat" : "StoryBananaMind-7.5M");
-        Model model;
-        Tokenizer tokenizer;
-        if (chat_model) {
-            model.load(chat_weights_start,
-                       static_cast<size_t>(chat_weights_end - chat_weights_start));
-            tokenizer.load(chat_tokenizer_start,
-                           static_cast<size_t>(chat_tokenizer_end - chat_tokenizer_start));
-        } else {
-            model.load(story_weights_start,
-                       static_cast<size_t>(story_weights_end - story_weights_start));
-            tokenizer.load(story_tokenizer_start,
-                           static_cast<size_t>(story_tokenizer_end - story_tokenizer_start));
-        }
-
-        const bool keyboard_ready = KEYBOARD_Init(on_usb_key) >= 0;
-        int previous_buttons = 0;
-        std::string previous_prompt;
-        while (true) {
-            draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model);
-            bool generate_story = false;
-            while (!generate_story) {
-                WPAD_ScanPads();
-                const int buttons = WPAD_ButtonsDown(0);
-                if (buttons & WPAD_BUTTON_HOME) {
-                    if (keyboard_ready) KEYBOARD_Deinit();
-                    return 0;
-                }
-                if (buttons & WPAD_BUTTON_LEFT) move_cursor(0, -1);
-                if (buttons & WPAD_BUTTON_RIGHT) move_cursor(0, 1);
-                if (buttons & WPAD_BUTTON_UP) move_cursor(-1, 0);
-                if (buttons & WPAD_BUTTON_DOWN) move_cursor(1, 0);
-                if (buttons & WPAD_BUTTON_A) {
-                    char selected = kKeyboardRows[key_row][key_column];
-                    if (selected && prompt_text.size() < kMaxPromptLength) {
-                        prompt_text += selected;
-                    }
-                }
-                if ((buttons & WPAD_BUTTON_B) && !prompt_text.empty()) {
-                    prompt_text.erase(prompt_text.size() - 1);
-                }
-                if ((buttons & WPAD_BUTTON_MINUS) &&
-                    prompt_text.size() < kMaxPromptLength) {
-                    prompt_text += ' ';
-                }
-                if (buttons & WPAD_BUTTON_PLUS) generate_story = true;
-                if (buttons != previous_buttons || prompt_text != previous_prompt) {
-                    draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model);
-                }
-                previous_buttons = buttons;
-                previous_prompt = prompt_text;
-                VIDEO_WaitVSync();
-            }
-
-            draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model);
-            std::printf("\n\n%s...\n", chat_model ? "Thinking" : "Generating");
-            std::string continuation;
-            try {
-                const std::string active_prompt = chat_model
-                    ? make_chat_prompt(tokenizer, prompt_text) : prompt_text;
-                continuation = generate(
-                    model, tokenizer, active_prompt,
-                    chat_model ? static_cast<int>(kChatMaxReply) : 80);
-            } catch (const std::exception& e) {
-                consoleClear();
-                std::printf("Could not generate a reply:\n%s\n\n", e.what());
-                std::printf("Edit the message and try again. Press HOME to quit.\n");
-                VIDEO_WaitVSync();
-                continue;
-            }
-            if (chat_model) {
-                chat_history.push_back(std::make_pair(prompt_text, continuation));
-                if (chat_history.size() > 8) chat_history.erase(chat_history.begin());
-                std::printf("\nYou: %s\n\nAssistant: %s\n\n",
-                            prompt_text.c_str(), continuation.c_str());
-            } else {
-                std::printf("\n\n%s\n\n", continuation.c_str());
-            }
-            std::printf("Press A or Plus to enter another %s, Home to quit.\n",
-                        chat_model ? "message" : "prompt");
             while (true) {
+                draw_model_menu(selected_model);
                 WPAD_ScanPads();
                 const int buttons = WPAD_ButtonsDown(0);
-                if (buttons & WPAD_BUTTON_HOME) {
-                    if (keyboard_ready) KEYBOARD_Deinit();
-                    return 0;
-                }
-                if (buttons & (WPAD_BUTTON_A | WPAD_BUTTON_PLUS)) {
-                    prompt_text.clear();
-                    break;
-                }
+                if (buttons & WPAD_BUTTON_HOME) return 0;
+                if (buttons & WPAD_BUTTON_UP) selected_model = (selected_model + 3) % 4;
+                if (buttons & WPAD_BUTTON_DOWN) selected_model = (selected_model + 1) % 4;
+                if (buttons & WPAD_BUTTON_A) break;
                 VIDEO_WaitVSync();
+            }
+            const bool nano_continuation_model = selected_model == 1;
+            const bool chat_model = selected_model >= 2;
+            const bool medium_chat_model = selected_model == 3;
+            std::printf("\nLoading %s...\n",
+                        selected_model == 0 ? "StoryBananaMind-7.5M" :
+                        nano_continuation_model ? "BananaMind 2 Nano" :
+                        selected_model == 2 ? "BananaMind 2 Nano Chat" :
+                                              "BananaMind 2 Medium Chat");
+            Model model;
+            Tokenizer tokenizer;
+            if (nano_continuation_model) {
+                if (!fatInitDefault()) {
+                    throw std::runtime_error("Could not mount the SD card");
+                }
+                model.load_file("sd:/apps/wii-ran-ai/nano-continuation-wii-weights.bin");
+                tokenizer.load("sd:/apps/wii-ran-ai/nano-continuation-wii-tokenizer.bin");
+            } else if (selected_model == 2) {
+                model.load(chat_weights_start,
+                           static_cast<size_t>(chat_weights_end - chat_weights_start));
+                tokenizer.load(chat_tokenizer_start,
+                               static_cast<size_t>(chat_tokenizer_end - chat_tokenizer_start));
+            } else if (medium_chat_model) {
+                if (!fatInitDefault()) {
+                    throw std::runtime_error("Could not mount the SD card");
+                }
+                model.load_file("sd:/apps/wii-ran-ai/medium-chat-wii-weights.bin");
+                tokenizer.load("sd:/apps/wii-ran-ai/medium-chat-wii-tokenizer.bin");
+            } else {
+                model.load(story_weights_start,
+                           static_cast<size_t>(story_weights_end - story_weights_start));
+                tokenizer.load(story_tokenizer_start,
+                               static_cast<size_t>(story_tokenizer_end - story_tokenizer_start));
+            }
+
+            const bool keyboard_ready = KEYBOARD_Init(on_usb_key) >= 0;
+            bool return_to_model_menu = false;
+            int previous_buttons = 0;
+            std::string previous_prompt;
+            while (!return_to_model_menu) {
+                draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model,
+                                  nano_continuation_model);
+                bool generate_story = false;
+                while (!generate_story) {
+                    WPAD_ScanPads();
+                    const int buttons = WPAD_ButtonsDown(0);
+                    if (buttons & WPAD_BUTTON_HOME) {
+                        return_to_model_menu = true;
+                        break;
+                    }
+                    if (buttons & WPAD_BUTTON_LEFT) move_cursor(0, -1);
+                    if (buttons & WPAD_BUTTON_RIGHT) move_cursor(0, 1);
+                    if (buttons & WPAD_BUTTON_UP) move_cursor(-1, 0);
+                    if (buttons & WPAD_BUTTON_DOWN) move_cursor(1, 0);
+                    if (buttons & WPAD_BUTTON_1) shift_active = !shift_active;
+                    if (buttons & WPAD_BUTTON_2) caps_lock = !caps_lock;
+                    if (buttons & WPAD_BUTTON_A) {
+                        char selected = keyboard_key(key_row, key_column);
+                        if (selected && prompt_text.size() < kMaxPromptLength) {
+                            prompt_text += selected;
+                            if (shift_active) shift_active = false;
+                        }
+                    }
+                    if ((buttons & WPAD_BUTTON_B) && !prompt_text.empty()) {
+                        prompt_text.erase(prompt_text.size() - 1);
+                    }
+                    if ((buttons & WPAD_BUTTON_MINUS) &&
+                        prompt_text.size() < kMaxPromptLength) {
+                        prompt_text += ' ';
+                    }
+                    if (buttons & WPAD_BUTTON_PLUS) generate_story = true;
+                    if (buttons != previous_buttons || prompt_text != previous_prompt) {
+                        draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(),
+                                          chat_model, nano_continuation_model);
+                    }
+                    previous_buttons = buttons;
+                    previous_prompt = prompt_text;
+                    VIDEO_WaitVSync();
+                }
+                if (return_to_model_menu) break;
+
+                draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model,
+                                  nano_continuation_model);
+                std::printf("\n\n%s...\n", chat_model ? "Thinking" :
+                            nano_continuation_model ? "Continuing" : "Generating");
+                std::string continuation;
+                try {
+                    const std::string active_prompt = chat_model
+                        ? make_chat_prompt(
+                              tokenizer, prompt_text,
+                              medium_chat_model ? kMediumChatWiiContext
+                                                : kNanoChatWiiContext,
+                              medium_chat_model ? kMediumChatMaxReply
+                                                : kNanoChatMaxReply,
+                              medium_chat_model)
+                        : prompt_text;
+                    continuation = generate(
+                        model, tokenizer, active_prompt,
+                        chat_model
+                            ? static_cast<int>(medium_chat_model
+                                                   ? kMediumChatMaxReply
+                                                   : kNanoChatMaxReply)
+                            : nano_continuation_model ? 128 : 80,
+                        true, chat_model);
+                } catch (const std::exception& e) {
+                    consoleClear();
+                    std::printf("Could not generate a reply:\n%s\n\n", e.what());
+                    std::printf("Edit the message and try again; HOME returns to model selection.\n");
+                    WPAD_ScanPads();
+                    if (WPAD_ButtonsDown(0) & WPAD_BUTTON_HOME) {
+                        return_to_model_menu = true;
+                        break;
+                    }
+                    VIDEO_WaitVSync();
+                    continue;
+                }
+
+                if (chat_model) {
+                    chat_history.push_back(std::make_pair(prompt_text, continuation));
+                    if (chat_history.size() > 32) chat_history.erase(chat_history.begin());
+                    std::printf("\nYou: %s\n\nAssistant: %s\n\n",
+                                prompt_text.c_str(), continuation.c_str());
+                } else {
+                    std::printf("\n\n%s\n\n", continuation.c_str());
+                }
+                std::printf("Press A or Plus for another %s, Home for model selection.\n",
+                            chat_model ? "message" : "prompt");
+                while (true) {
+                    WPAD_ScanPads();
+                    const int buttons = WPAD_ButtonsDown(0);
+                    if (buttons & WPAD_BUTTON_HOME) {
+                        return_to_model_menu = true;
+                        break;
+                    }
+                    if (buttons & (WPAD_BUTTON_A | WPAD_BUTTON_PLUS)) {
+                        prompt_text.clear();
+                        break;
+                    }
+                    VIDEO_WaitVSync();
+                }
+            }
+            if (keyboard_ready) KEYBOARD_Deinit();
+            if (return_to_model_menu) {
+                prompt_text.clear();
+                chat_history.clear();
+                shift_active = false;
             }
         }
     } catch (const std::exception& e) {
@@ -1196,8 +1346,9 @@ int main(int argc, char** argv) {
     const char* tokenizer = argc > 2 ? argv[2] : "story-wii-tokenizer.bin";
     const char* prompt = argc > 3 ? argv[3] : "prompt.txt";
     const int max_new_tokens = argc > 4 ? std::atoi(argv[4]) : 32;
+    const bool use_sampling = argc > 5 && std::atoi(argv[5]) != 0;
     try {
-        run(weights, tokenizer, prompt, max_new_tokens);
+        run(weights, tokenizer, prompt, max_new_tokens, use_sampling);
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         return 1;
