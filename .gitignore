@@ -1,0 +1,15 @@
+*.elf
+*.dol
+*.map
+*.o
+*.d
+__pycache__/
+story-wii-raw/
+model.safetensors
+tokenizer.json
+config.json
+wii-ran-ai-hbc.zip
+story-wii-weights.bin
+story-wii-tokenizer.bin
+.model-data-stamp
+.converted-stamp

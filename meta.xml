@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1">
+  <name>Wii Ran AI</name>
+  <coder>NILKNARFGonzo</coder>
+  <version>1.0.0</version>
+  <release_date>20261121000000</release_date>
+  <short_description>Story generation on your Wii</short_description>
+  <long_description>Type a story prompt with a USB keyboard or the Wii Remote on-screen keyboard and generate a short story locally. Powered by StoryBananaMind-7.5M. Controls: D-pad moves, A types, B deletes, Minus inserts a space, Plus generates, and Home quits.</long_description>
+  <ahb_access />
+</app>
