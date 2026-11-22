@@ -1154,7 +1154,7 @@ void draw_input_screen(bool usb_keyboard, bool chat_model,
     }
     std::printf("\nRemote: D-pad move, A type, B delete\n");
     std::printf("1: Shift/symbols (one key)   2: Caps Lock\n");
-    std::printf("Minus: space   Plus: generate   Home: quit\n");
+    std::printf("Minus: space   Plus: generate   Home: model selection\n");
 }
 
 }  // namespace
@@ -1176,145 +1176,161 @@ int main() {
     try {
         int selected_model = 0;
         while (true) {
-            draw_model_menu(selected_model);
-            WPAD_ScanPads();
-            const int buttons = WPAD_ButtonsDown(0);
-            if (buttons & WPAD_BUTTON_HOME) return 0;
-            if (buttons & WPAD_BUTTON_UP) selected_model = (selected_model + 3) % 4;
-            if (buttons & WPAD_BUTTON_DOWN) selected_model = (selected_model + 1) % 4;
-            if (buttons & WPAD_BUTTON_A) break;
-            VIDEO_WaitVSync();
-        }
-        const bool nano_continuation_model = selected_model == 1;
-        const bool chat_model = selected_model >= 2;
-        const bool medium_chat_model = selected_model == 3;
-        std::printf("\nLoading %s...\n",
-                    selected_model == 0 ? "StoryBananaMind-7.5M" :
-                    nano_continuation_model ? "BananaMind 2 Nano" :
-                    selected_model == 2 ? "BananaMind 2 Nano Chat" :
-                                          "BananaMind 2 Medium Chat");
-        Model model;
-        Tokenizer tokenizer;
-        if (nano_continuation_model) {
-            if (!fatInitDefault()) {
-                throw std::runtime_error("Could not mount the SD card");
-            }
-            model.load_file("sd:/apps/wii-ran-ai/nano-continuation-wii-weights.bin");
-            tokenizer.load("sd:/apps/wii-ran-ai/nano-continuation-wii-tokenizer.bin");
-        } else if (selected_model == 2) {
-            model.load(chat_weights_start,
-                       static_cast<size_t>(chat_weights_end - chat_weights_start));
-            tokenizer.load(chat_tokenizer_start,
-                           static_cast<size_t>(chat_tokenizer_end - chat_tokenizer_start));
-        } else if (medium_chat_model) {
-            if (!fatInitDefault()) {
-                throw std::runtime_error("Could not mount the SD card");
-            }
-            model.load_file("sd:/apps/wii-ran-ai/medium-chat-wii-weights.bin");
-            tokenizer.load("sd:/apps/wii-ran-ai/medium-chat-wii-tokenizer.bin");
-        } else {
-            model.load(story_weights_start,
-                       static_cast<size_t>(story_weights_end - story_weights_start));
-            tokenizer.load(story_tokenizer_start,
-                           static_cast<size_t>(story_tokenizer_end - story_tokenizer_start));
-        }
-
-        const bool keyboard_ready = KEYBOARD_Init(on_usb_key) >= 0;
-        int previous_buttons = 0;
-        std::string previous_prompt;
-        while (true) {
-            draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model,
-                              nano_continuation_model);
-            bool generate_story = false;
-            while (!generate_story) {
-                WPAD_ScanPads();
-                const int buttons = WPAD_ButtonsDown(0);
-                if (buttons & WPAD_BUTTON_HOME) {
-                    if (keyboard_ready) KEYBOARD_Deinit();
-                    return 0;
-                }
-                if (buttons & WPAD_BUTTON_LEFT) move_cursor(0, -1);
-                if (buttons & WPAD_BUTTON_RIGHT) move_cursor(0, 1);
-                if (buttons & WPAD_BUTTON_UP) move_cursor(-1, 0);
-                if (buttons & WPAD_BUTTON_DOWN) move_cursor(1, 0);
-                if (buttons & WPAD_BUTTON_1) shift_active = !shift_active;
-                if (buttons & WPAD_BUTTON_2) caps_lock = !caps_lock;
-                if (buttons & WPAD_BUTTON_A) {
-                    char selected = keyboard_key(key_row, key_column);
-                    if (selected && prompt_text.size() < kMaxPromptLength) {
-                        prompt_text += selected;
-                        if (shift_active) shift_active = false;
-                    }
-                }
-                if ((buttons & WPAD_BUTTON_B) && !prompt_text.empty()) {
-                    prompt_text.erase(prompt_text.size() - 1);
-                }
-                if ((buttons & WPAD_BUTTON_MINUS) &&
-                    prompt_text.size() < kMaxPromptLength) {
-                    prompt_text += ' ';
-                }
-                if (buttons & WPAD_BUTTON_PLUS) generate_story = true;
-                if (buttons != previous_buttons || prompt_text != previous_prompt) {
-                    draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(),
-                                      chat_model, nano_continuation_model);
-                }
-                previous_buttons = buttons;
-                previous_prompt = prompt_text;
-                VIDEO_WaitVSync();
-            }
-
-            draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model,
-                              nano_continuation_model);
-            std::printf("\n\n%s...\n", chat_model ? "Thinking" :
-                        nano_continuation_model ? "Continuing" : "Generating");
-            std::string continuation;
-            try {
-                const std::string active_prompt = chat_model
-                    ? make_chat_prompt(
-                          tokenizer, prompt_text,
-                          medium_chat_model ? kMediumChatWiiContext
-                                            : kNanoChatWiiContext,
-                          medium_chat_model ? kMediumChatMaxReply
-                                            : kNanoChatMaxReply,
-                          medium_chat_model)
-                    : prompt_text;
-                continuation = generate(
-                    model, tokenizer, active_prompt,
-                    chat_model
-                        ? static_cast<int>(medium_chat_model
-                                               ? kMediumChatMaxReply
-                                               : kNanoChatMaxReply)
-                        : nano_continuation_model ? 128 : 80,
-                    true, chat_model);
-            } catch (const std::exception& e) {
-                consoleClear();
-                std::printf("Could not generate a reply:\n%s\n\n", e.what());
-                std::printf("Edit the message and try again. Press HOME to quit.\n");
-                VIDEO_WaitVSync();
-                continue;
-            }
-            if (chat_model) {
-                chat_history.push_back(std::make_pair(prompt_text, continuation));
-                if (chat_history.size() > 32) chat_history.erase(chat_history.begin());
-                std::printf("\nYou: %s\n\nAssistant: %s\n\n",
-                            prompt_text.c_str(), continuation.c_str());
-            } else {
-                std::printf("\n\n%s\n\n", continuation.c_str());
-            }
-            std::printf("Press A or Plus to enter another %s, Home to quit.\n",
-                        chat_model ? "message" : "prompt");
             while (true) {
+                draw_model_menu(selected_model);
                 WPAD_ScanPads();
                 const int buttons = WPAD_ButtonsDown(0);
-                if (buttons & WPAD_BUTTON_HOME) {
-                    if (keyboard_ready) KEYBOARD_Deinit();
-                    return 0;
-                }
-                if (buttons & (WPAD_BUTTON_A | WPAD_BUTTON_PLUS)) {
-                    prompt_text.clear();
-                    break;
-                }
+                if (buttons & WPAD_BUTTON_HOME) return 0;
+                if (buttons & WPAD_BUTTON_UP) selected_model = (selected_model + 3) % 4;
+                if (buttons & WPAD_BUTTON_DOWN) selected_model = (selected_model + 1) % 4;
+                if (buttons & WPAD_BUTTON_A) break;
                 VIDEO_WaitVSync();
+            }
+            const bool nano_continuation_model = selected_model == 1;
+            const bool chat_model = selected_model >= 2;
+            const bool medium_chat_model = selected_model == 3;
+            std::printf("\nLoading %s...\n",
+                        selected_model == 0 ? "StoryBananaMind-7.5M" :
+                        nano_continuation_model ? "BananaMind 2 Nano" :
+                        selected_model == 2 ? "BananaMind 2 Nano Chat" :
+                                              "BananaMind 2 Medium Chat");
+            Model model;
+            Tokenizer tokenizer;
+            if (nano_continuation_model) {
+                if (!fatInitDefault()) {
+                    throw std::runtime_error("Could not mount the SD card");
+                }
+                model.load_file("sd:/apps/wii-ran-ai/nano-continuation-wii-weights.bin");
+                tokenizer.load("sd:/apps/wii-ran-ai/nano-continuation-wii-tokenizer.bin");
+            } else if (selected_model == 2) {
+                model.load(chat_weights_start,
+                           static_cast<size_t>(chat_weights_end - chat_weights_start));
+                tokenizer.load(chat_tokenizer_start,
+                               static_cast<size_t>(chat_tokenizer_end - chat_tokenizer_start));
+            } else if (medium_chat_model) {
+                if (!fatInitDefault()) {
+                    throw std::runtime_error("Could not mount the SD card");
+                }
+                model.load_file("sd:/apps/wii-ran-ai/medium-chat-wii-weights.bin");
+                tokenizer.load("sd:/apps/wii-ran-ai/medium-chat-wii-tokenizer.bin");
+            } else {
+                model.load(story_weights_start,
+                           static_cast<size_t>(story_weights_end - story_weights_start));
+                tokenizer.load(story_tokenizer_start,
+                               static_cast<size_t>(story_tokenizer_end - story_tokenizer_start));
+            }
+
+            const bool keyboard_ready = KEYBOARD_Init(on_usb_key) >= 0;
+            bool return_to_model_menu = false;
+            int previous_buttons = 0;
+            std::string previous_prompt;
+            while (!return_to_model_menu) {
+                draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model,
+                                  nano_continuation_model);
+                bool generate_story = false;
+                while (!generate_story) {
+                    WPAD_ScanPads();
+                    const int buttons = WPAD_ButtonsDown(0);
+                    if (buttons & WPAD_BUTTON_HOME) {
+                        return_to_model_menu = true;
+                        break;
+                    }
+                    if (buttons & WPAD_BUTTON_LEFT) move_cursor(0, -1);
+                    if (buttons & WPAD_BUTTON_RIGHT) move_cursor(0, 1);
+                    if (buttons & WPAD_BUTTON_UP) move_cursor(-1, 0);
+                    if (buttons & WPAD_BUTTON_DOWN) move_cursor(1, 0);
+                    if (buttons & WPAD_BUTTON_1) shift_active = !shift_active;
+                    if (buttons & WPAD_BUTTON_2) caps_lock = !caps_lock;
+                    if (buttons & WPAD_BUTTON_A) {
+                        char selected = keyboard_key(key_row, key_column);
+                        if (selected && prompt_text.size() < kMaxPromptLength) {
+                            prompt_text += selected;
+                            if (shift_active) shift_active = false;
+                        }
+                    }
+                    if ((buttons & WPAD_BUTTON_B) && !prompt_text.empty()) {
+                        prompt_text.erase(prompt_text.size() - 1);
+                    }
+                    if ((buttons & WPAD_BUTTON_MINUS) &&
+                        prompt_text.size() < kMaxPromptLength) {
+                        prompt_text += ' ';
+                    }
+                    if (buttons & WPAD_BUTTON_PLUS) generate_story = true;
+                    if (buttons != previous_buttons || prompt_text != previous_prompt) {
+                        draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(),
+                                          chat_model, nano_continuation_model);
+                    }
+                    previous_buttons = buttons;
+                    previous_prompt = prompt_text;
+                    VIDEO_WaitVSync();
+                }
+                if (return_to_model_menu) break;
+
+                draw_input_screen(keyboard_ready && USBKeyboard_IsConnected(), chat_model,
+                                  nano_continuation_model);
+                std::printf("\n\n%s...\n", chat_model ? "Thinking" :
+                            nano_continuation_model ? "Continuing" : "Generating");
+                std::string continuation;
+                try {
+                    const std::string active_prompt = chat_model
+                        ? make_chat_prompt(
+                              tokenizer, prompt_text,
+                              medium_chat_model ? kMediumChatWiiContext
+                                                : kNanoChatWiiContext,
+                              medium_chat_model ? kMediumChatMaxReply
+                                                : kNanoChatMaxReply,
+                              medium_chat_model)
+                        : prompt_text;
+                    continuation = generate(
+                        model, tokenizer, active_prompt,
+                        chat_model
+                            ? static_cast<int>(medium_chat_model
+                                                   ? kMediumChatMaxReply
+                                                   : kNanoChatMaxReply)
+                            : nano_continuation_model ? 128 : 80,
+                        true, chat_model);
+                } catch (const std::exception& e) {
+                    consoleClear();
+                    std::printf("Could not generate a reply:\n%s\n\n", e.what());
+                    std::printf("Edit the message and try again; HOME returns to model selection.\n");
+                    WPAD_ScanPads();
+                    if (WPAD_ButtonsDown(0) & WPAD_BUTTON_HOME) {
+                        return_to_model_menu = true;
+                        break;
+                    }
+                    VIDEO_WaitVSync();
+                    continue;
+                }
+
+                if (chat_model) {
+                    chat_history.push_back(std::make_pair(prompt_text, continuation));
+                    if (chat_history.size() > 32) chat_history.erase(chat_history.begin());
+                    std::printf("\nYou: %s\n\nAssistant: %s\n\n",
+                                prompt_text.c_str(), continuation.c_str());
+                } else {
+                    std::printf("\n\n%s\n\n", continuation.c_str());
+                }
+                std::printf("Press A or Plus for another %s, Home for model selection.\n",
+                            chat_model ? "message" : "prompt");
+                while (true) {
+                    WPAD_ScanPads();
+                    const int buttons = WPAD_ButtonsDown(0);
+                    if (buttons & WPAD_BUTTON_HOME) {
+                        return_to_model_menu = true;
+                        break;
+                    }
+                    if (buttons & (WPAD_BUTTON_A | WPAD_BUTTON_PLUS)) {
+                        prompt_text.clear();
+                        break;
+                    }
+                    VIDEO_WaitVSync();
+                }
+            }
+            if (keyboard_ready) KEYBOARD_Deinit();
+            if (return_to_model_menu) {
+                prompt_text.clear();
+                chat_history.clear();
+                shift_active = false;
             }
         }
     } catch (const std::exception& e) {

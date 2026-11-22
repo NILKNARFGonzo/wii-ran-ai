@@ -50,7 +50,9 @@ upstream revisions `c8564d1bd3f6177221ed7e4f63ae5f281a677a1c` (Nano base),
    letter case.
 5. Press **A** or **Plus** after a response to enter another prompt/message.
    The chat model retains up to 32 recent turns, trimming older context to fit
-   the selected model's Wii memory budget. Press **Home** to quit. For Nano
+   the selected model's Wii memory budget. Press **Home** to return to model
+   selection; it quits the app from the model picker. Returning clears the
+   current prompt and chat history. For Nano
    Continue, enter a prefix or passage and the base model will continue it.
 
 Inputs are limited to 256 characters. Story generation is limited to 80 tokens
