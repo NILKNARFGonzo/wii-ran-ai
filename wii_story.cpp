@@ -1002,16 +1002,14 @@ void draw_model_menu(int selected) {
     std::printf("Wii Ran AI - select a model\n\n");
     std::printf("%s StoryBananaMind-7.5M (stories)\n",
                 selected == 0 ? ">" : " ");
-    std::printf("%s BananaMind 2 Nano Chat (assistant)\n\n",
+    std::printf("%s BananaMind 2 Nano Chat (experimental)\n\n",
                 selected == 1 ? ">" : " ");
     std::printf("D-pad: select   A: choose   Home: quit\n");
 }
 
 std::string make_chat_prompt(const Tokenizer& tokenizer,
                              const std::string& user_message) {
-    const std::string system_prompt =
-        "You are BananaMind, a friendly and concise assistant. "
-        "Answer directly, be honest when you are unsure, and keep explanations clear.";
+    const std::string system_prompt = "You are a concise and helpful assistant.";
     size_t first_turn = 0;
     std::string prompt;
     while (true) {
@@ -1034,6 +1032,9 @@ void draw_input_screen(bool usb_keyboard, bool chat_model) {
     consoleClear();
     std::printf(chat_model ? "BananaMind Chat - enter a message\n\n"
                            : "Wii Ran AI - type a story prompt\n\n");
+    if (chat_model) {
+        std::printf("Experimental: replies may be wrong or incoherent.\n\n");
+    }
     std::printf("Prompt (max %u chars):\n%s_\n\n",
                 static_cast<unsigned>(kMaxPromptLength), prompt_text.c_str());
     if (usb_keyboard) {

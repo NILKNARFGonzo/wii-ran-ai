@@ -5,11 +5,11 @@ Wii Ran AI is a local C++ text generator for the Wii with a model picker:
 - **Stories:** [StoryBananaMind-7.5M](https://huggingface.co/BananaMind/StoryBananaMind-7.5M),
   a 7.5M-parameter GPT-2 story model.
 - **Chat:** [BananaMind 2 Nano Chat](https://huggingface.co/BananaMind/BananaMind-2-Nano-Chat),
-  a 9,968,128-parameter, full-parameter supervised fine-tune of BananaMind 2
-  Nano on Smol-SmolTalk. Its upstream card describes a 10-layer decoder with
-  256-wide hidden states, four query heads / two KV heads, QK RMS normalization,
-  RoPE, SwiGLU, an 8,192-token digit-aware BPE tokenizer, and 4,096-token
-  context. The weights and tokenizer are Apache-2.0.
+  an experimental 9,968,128-parameter, full-parameter supervised fine-tune of
+  BananaMind 2 Nano on Smol-SmolTalk. Its upstream card describes a 10-layer
+  decoder with 256-wide hidden states, four query heads / two KV heads, QK RMS
+  normalization, RoPE, SwiGLU, an 8,192-token digit-aware BPE tokenizer, and
+  4,096-token context. The weights and tokenizer are Apache-2.0.
 
 The Wii build quantizes each model's non-normalization tensors to INT8 while
 keeping normalization weights in float32; activations and KV cache are
@@ -38,9 +38,12 @@ upstream revision `6def7ab4d1bd8449d9b75b62bfb174f73d3a8ad6`.
 Inputs are limited to 256 characters. Story generation is limited to 80 tokens
 or the story model's 256-token context; chat replies are limited to 64 tokens
 within the 2,048-token Wii chat context. Up to 32 recent turns are retained,
-trimmed as needed to fit the context. BananaMind Nano Chat is a research-scale
-model and may give weak, incorrect, or incoherent answers; it is not suitable
-for high-stakes use.
+trimmed as needed to fit the context. BananaMind Nano Chat is experimental and
+not reliable for general assistance: its model card reports 35 passed examples
+out of 300 (9.15%) on its self-reported instruction benchmark and warns that it
+may fail arithmetic, hallucinate facts, or produce invalid output. The Wii app
+shows this warning before chat. Do not rely on it for correctness or high-stakes
+use.
 
 ## Build from source
 
@@ -75,7 +78,7 @@ For a Nano Chat host smoke test, write a model-native prompt to a text file:
 
 ```text
 <|bos|><|system|>
-You are BananaMind, a friendly and concise assistant. Answer directly, be honest when you are unsure, and keep explanations clear.
+You are a concise and helpful assistant.
 <|user|>
 Say hello in one short sentence.<|assistant|>
 ```
